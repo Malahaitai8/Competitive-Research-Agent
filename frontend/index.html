@@ -12,7 +12,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap" rel="stylesheet">
     <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <link rel="stylesheet" href="/site/styles.css" />
+    <link rel="stylesheet" href="/site/styles.css?v=rollback-ui-2" />
     <style>
         .avatar {
             width: 80px;
@@ -137,28 +137,16 @@
 
     <section class="landing">
         <div class="max-w-5xl mx-auto text-center">
-            <h1 class="text-4xl font-extrabold mx-auto lg:text-7xl">
-                竞研 <br>
-                <span
-                    style="background-image:linear-gradient(to right, #9867F0, #ED4E50); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Agent</span>
-            </h1>
+            <h1 class="text-4xl font-extrabold mx-auto lg:text-7xl hero-title-inline">竞研 <span
+                    style="background-image:linear-gradient(to right, #9867F0, #ED4E50); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Agent</span></h1>
             <p class="max-w-6xl mx-auto text-gray-600 mt-8" style="font-size:20px">
-                面向产品经理的竞品研究助手。输入研究主题和竞品清单，自动完成搜索、信息整理、对比分析和带引用的中文报告。
+                面向产品经理的竞品研究助手。输入研究主题和竞品清单，自动完成搜索、信息整理、对比分析和带引用的报告。
             </p>
-            <a href="#form" class="btn btn-primary">开始研究</a>
         </div>
     </section>
 
-    <div class="workbench-brand" aria-label="竞研 Agent">
-        <img src="/static/jingyan-agent-cat.png" class="workbench-brand-avatar" alt="竞研 Agent 头像">
-        <div class="workbench-brand-copy">
-            <strong>竞研 Agent</strong>
-            <span>生成带引用的中文竞品研究报告</span>
-        </div>
-    </div>
-
-    <main class="app-workbench" id="form">
-        <section class="research-config-panel">
+    <main class="container" id="form">
+        <div class="agent-item"><img src="/static/jingyan-agent-cat.png" class="avatar" alt="竞研 Agent 头像"></div>
         <form method="POST" class="mt-3" id="researchForm">
             <div class="form-group">
                 <label for="task" class="agent-question">竞品研究任务</label>
@@ -221,8 +209,8 @@
                 <button type="button" id="btnShowAuto" class="btn btn-secondary mt-3 btn-show">自动 Agent</button>
             </div>
             <div class="form-group">
-                <label for="report_source" class="agent-question">研究来源</label>
-                <p class="form-help">选择本次竞品调研使用的资料入口。本地文档模式需要配置 DOC_PATH 环境变量。</p>
+                <label for="report_source" class="agent-question">请选择研究来源</label>
+                <p class="text-left mt-0 pt-0" style="font-size: 0.7rem;">可选择网页、本地文档或混合来源。本地文档模式需要配置 DOC_PATH 环境变量。</p>
                 <select name="report_source" id="report_source" class="form-control highlight-connection" required>
                     <option value="web">网页</option>
                     <option value="local">本地文档</option>
@@ -240,30 +228,24 @@
                 <input type="text" class="form-control highlight-connection" id="queryDomains" name="query_domains" placeholder="多个域名用英文逗号分隔" autocomplete="on">
                 <small class="text-muted">示例：techcrunch.com, forbes.com</small>
             </div>
+
+            <input type="submit" value="开始研究" class="btn btn-primary button-padding" id="submitButton">
         </form>
-        <div class="research-submit-bar">
-            <input type="submit" form="researchForm" value="开始研究" class="btn btn-primary button-padding" id="submitButton">
+
+        <!-- Add JSON button above Research Progress section -->
+        <div class="margin-div" id="jsonButtonContainer" style="display: none; text-align: right; margin-bottom: 10px;">
+            <a id="downloadLinkJsonTop" href="#" class="report-action-btn disabled" target="_blank" rel="noopener noreferrer">
+                <i class="fas fa-file-code"></i> JSON
+            </a>
         </div>
-        </section>
 
-        <section class="workspace-panel">
-            <div class="workspace-tabs" role="tablist" aria-label="研究工作区">
-                <button type="button" class="workspace-tab is-active" data-workspace-tab="report" role="tab" aria-selected="true">研究报告</button>
-                <button type="button" class="workspace-tab" id="workspaceChatTab" data-workspace-tab="chat" role="tab" aria-selected="false" hidden>继续追问</button>
-            </div>
-
-            <section class="workspace-progress is-collapsed" id="workspaceProgress" hidden>
-        <button type="button" id="workspaceProgressToggle" class="workspace-progress-toggle" title="收起研究进度">收起研究进度</button>
         <div class="margin-div research-output-container">
             <!-- Move spinner to the left side of the text -->
-            <h2><div id="modernSpinner" class="modern-spinner"></div> 研究进度</h2>
+            <h2><div id="modernSpinner" class="modern-spinner"></div> 研究进度 <button id="expandOutputBtn" class="expand-button" title="展开"><i class="fas fa-expand-alt"></i></button></h2>
             <p class="mt-2 text-left" style="font-size: 0.8rem;">
                 实时查看 AI 搜索、抓取和分析过程。</p>
             <div id="output"></div>
         </div>
-            </section>
-
-            <div class="workspace-view is-active" data-workspace-view="report">
         <div class="images_div">
             <div id="selectedImagesContainer" style="display: none;"></div>
         </div>
@@ -271,6 +253,9 @@
             <h2>研究报告
                 <button id="copyToClipboardTop" class="icon-button" title="复制" style="display: none;">
                     <i class="fas fa-copy"></i>
+                </button>
+                <button id="expandReportBtn" class="expand-button" title="展开">
+                    <i class="fas fa-expand-alt"></i>
                 </button>
             </h2>
             <!-- Add download buttons above the report container -->
@@ -291,40 +276,22 @@
                 <div class="alert alert-info" role="alert" id="status"></div>
             </div>
         </div>
-        <div class="sticky-downloads-bar" id="stickyDownloadsBar" style="display: none;"> <!-- Initially hidden -->
-            <div class="download-buttons-container">
-                <a id="copyToClipboard" class="download-option-btn disabled">
-                    <i class="fas fa-copy"></i> 复制（Markdown）
-                </a>
-                <a id="downloadLinkMd" href="#" class="download-option-btn disabled" target="_blank" rel="noopener noreferrer">
-                    <i class="fas fa-file-lines"></i> Markdown
-                </a>
-                <a id="downloadLink" href="#" class="download-option-btn disabled" target="_blank" rel="noopener noreferrer">
-                    <i class="fas fa-file-pdf"></i> PDF
-                </a>
-                <a id="downloadLinkWord" href="#" class="download-option-btn disabled" target="_blank" rel="noopener noreferrer">
-                    <i class="fas fa-file-word"></i> Word
-                </a>
-                <a id="downloadLinkJson" href="#" class="download-option-btn disabled" target="_blank" rel="noopener noreferrer">
-                    <i class="fas fa-file-code"></i> 运行日志（JSON）
-                </a>
-            </div>
-        </div>
-            </div>
 
-            <div class="workspace-view" data-workspace-view="chat">
         <!-- Chat Container -->
         <div class="margin-div chat-container" id="chatContainer" style="display: none;">
+            <h2><i class="fas fa-comments"></i> 围绕本次研究继续追问 <button id="expandChatBtn" class="expand-button" title="展开"><i class="fas fa-expand-alt"></i></button></h2>
+            <p class="text-muted">对研究报告继续提问，获取更细的解释、对比或结论。</p>
             <div id="chatMessages" class="chat-messages"></div>
             <div class="chat-input-container">
-                <textarea id="chatInput" class="form-control chat-input" placeholder="继续追问这份报告..." rows="1"></textarea>
-                <button id="sendChatBtn" class="btn btn-primary" title="发送" aria-label="发送">
-                    <i class="fas fa-paper-plane"></i>
+                <textarea id="chatInput" class="form-control chat-input" placeholder="输入你想追问的问题..." rows="2"></textarea>
+                <button id="voiceInputBtn" class="btn btn-secondary" title="语音输入">
+                    <i class="fas fa-microphone"></i>
+                </button>
+                <button id="sendChatBtn" class="btn btn-primary">
+                    <i class="fas fa-paper-plane"></i> 发送
                 </button>
             </div>
         </div>
-            </div>
-        </section>
 
         <!-- Fixed bottom bar styled like the top credits bar -->
     </main>
@@ -360,11 +327,32 @@
         </div>
     </div>
     
+    <!-- Sticky Downloads Bar -->
+    <div class="sticky-downloads-bar" id="stickyDownloadsBar" style="display: none;"> <!-- Initially hidden -->
+        <div class="download-buttons-container">
+            <a id="copyToClipboard" class="download-option-btn disabled">
+                <i class="fas fa-copy"></i> 复制（Markdown）
+            </a>
+            <a id="downloadLinkMd" href="#" class="download-option-btn disabled" target="_blank" rel="noopener noreferrer">
+                <i class="fas fa-file-lines"></i> Markdown
+            </a>
+            <a id="downloadLink" href="#" class="download-option-btn disabled" target="_blank" rel="noopener noreferrer">
+                <i class="fas fa-file-pdf"></i> PDF
+            </a>
+            <a id="downloadLinkWord" href="#" class="download-option-btn disabled" target="_blank" rel="noopener noreferrer">
+                <i class="fas fa-file-word"></i> Word
+            </a>
+            <a id="downloadLinkJson" href="#" class="download-option-btn disabled" target="_blank" rel="noopener noreferrer">
+                <i class="fas fa-file-code"></i> 运行日志（JSON）
+            </a>
+        </div>
+    </div>
+
     <script src="https://cdnjs.cloudflare.com/ajax/libs/showdown/1.9.1/showdown.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.6/purify.min.js"
             integrity="sha512-YlctBG9PGZIhh9keoqI3eZkQM9T8QUbiBi7qNYAO/TUEo8jqWX5pLp5+x1cKRQDRzJ/lyGyJ9WUVNIRduxIIFw=="
             crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-    <script src="/site/scripts.js"></script>
+    <script src="/site/scripts.js?v=rollback-ui-2"></script>
     <script>
         // Auto-resize textarea as content grows
         const taskTextarea = document.getElementById('task');

@@ -9,10 +9,6 @@ const GPTResearcher = (() => {
   let isFirstReport = true; // Flag to track if this is the first report
   let chatContainer = null; // Global reference to chat container
   let lastRequestData = null; // Store the last request data for reconnection
-  let chatMessagesState = []; // User/assistant history sent with follow-up questions
-  let workspaceProgressStarted = false; // Tracks whether progress has content worth showing
-  let currentDownloadLinks = null; // Download links for the restored/current report
-  let currentCompetitiveAnalysis = null; // Competitive analysis metadata for the current report
 
   // Add WebSocket monitoring variables
   let socket = null;
@@ -25,9 +21,6 @@ const GPTResearcher = (() => {
   let reconnectAttempts = 0;
   let maxReconnectAttempts = 5;
   let reconnectInterval = 2000; // Start with 2 seconds
-  const DEFAULT_REPORT_TYPE = 'research_report';
-  const DEFAULT_TONE = 'Objective';
-  const WORKSPACE_SNAPSHOT_KEY = 'currentResearchWorkspace';
 
   const init = () => {
     // Check if cookies are enabled
@@ -61,8 +54,6 @@ const GPTResearcher = (() => {
 
     // Initialize expand buttons
     initExpandButtons();
-    initWorkspaceTabs();
-    initWorkspaceProgress();
 
     // Initialize history panel functionality
     initHistoryPanel();
@@ -74,8 +65,6 @@ const GPTResearcher = (() => {
     // No need to set display property here
 
     updateState('initial');
-    setWorkspaceChatAvailable(false);
-    hideWorkspaceProgress();
 
     // Initialize research icon to not spinning
     updateResearchIcon(false);
@@ -84,247 +73,6 @@ const GPTResearcher = (() => {
     const loadingOverlay = document.getElementById('loadingOverlay');
     if (loadingOverlay) {
       loadingOverlay.classList.add('loading-hidden');
-    }
-
-    restoreWorkspaceSnapshot();
-  }
-
-  const setDownloadBarVisibilityForWorkspace = (target) => {
-    const stickyDownloadsBar = document.getElementById('stickyDownloadsBar');
-    if (!stickyDownloadsBar) return;
-    stickyDownloadsBar.classList.toggle('is-workspace-hidden', target !== 'report');
-  }
-
-  const activateWorkspaceView = (target) => {
-    const tabs = document.querySelectorAll('[data-workspace-tab]');
-    const views = document.querySelectorAll('[data-workspace-view]');
-    const targetTab = document.querySelector(`[data-workspace-tab="${target}"]`);
-
-    if (targetTab && targetTab.hidden) return;
-
-    tabs.forEach((tab) => {
-      const isActive = tab.dataset.workspaceTab === target;
-      tab.classList.toggle('is-active', isActive);
-      tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
-    });
-
-    views.forEach((view) => {
-      view.classList.toggle('is-active', view.dataset.workspaceView === target);
-    });
-
-    syncWorkspaceProgressVisibility(target);
-    setDownloadBarVisibilityForWorkspace(target);
-    if (currentReport) {
-      persistCurrentWorkspaceSnapshot();
-    }
-  }
-
-  const getActiveWorkspaceTarget = () => {
-    const activeTab = document.querySelector('[data-workspace-tab].is-active');
-    return activeTab ? activeTab.dataset.workspaceTab : 'report';
-  }
-
-  const setWorkspaceChatAvailable = (available) => {
-    const chatTab = document.getElementById('workspaceChatTab');
-    const chatView = document.querySelector('[data-workspace-view="chat"]');
-    if (!chatTab || !chatView) return;
-
-    chatTab.hidden = !available;
-    chatView.hidden = !available;
-
-    if (!available && chatView.classList.contains('is-active')) {
-      activateWorkspaceView('report');
-    }
-  }
-
-  const initWorkspaceTabs = () => {
-    const tabs = document.querySelectorAll('[data-workspace-tab]');
-    if (!tabs.length) return;
-
-    tabs.forEach((tab) => {
-      tab.addEventListener('click', () => {
-        activateWorkspaceView(tab.dataset.workspaceTab);
-      });
-    });
-  }
-
-  const setWorkspaceProgressCollapsed = (collapsed) => {
-    const workspaceProgress = document.getElementById('workspaceProgress');
-    const toggle = document.getElementById('workspaceProgressToggle');
-
-    if (!workspaceProgress || !toggle) return;
-
-    workspaceProgress.classList.toggle('is-collapsed', collapsed);
-    workspaceProgress.classList.toggle('is-open', !collapsed);
-    toggle.textContent = collapsed ? '打开研究进度' : '收起研究进度';
-    toggle.title = collapsed ? '展开研究进度' : '收起研究进度';
-  }
-
-  const showWorkspaceProgress = () => {
-    const workspaceProgress = document.getElementById('workspaceProgress');
-    if (!workspaceProgress) return;
-    workspaceProgressStarted = true;
-    syncWorkspaceProgressVisibility();
-  }
-
-  const hideWorkspaceProgress = () => {
-    const workspaceProgress = document.getElementById('workspaceProgress');
-    if (!workspaceProgress) return;
-    workspaceProgressStarted = false;
-    setWorkspaceProgressCollapsed(true);
-    workspaceProgress.hidden = true;
-  }
-
-  const syncWorkspaceProgressVisibility = (target = getActiveWorkspaceTarget()) => {
-    const workspaceProgress = document.getElementById('workspaceProgress');
-    if (!workspaceProgress) return;
-
-    if (!workspaceProgressStarted || target === 'chat') {
-      workspaceProgress.hidden = true;
-      return;
-    }
-
-    workspaceProgress.hidden = false;
-  }
-
-  const expandWorkspaceProgress = () => {
-    showWorkspaceProgress();
-    setWorkspaceProgressCollapsed(false);
-  }
-
-  const collapseWorkspaceProgress = () => {
-    setWorkspaceProgressCollapsed(true);
-  }
-
-  const initWorkspaceProgress = () => {
-    const toggle = document.getElementById('workspaceProgressToggle');
-    const workspaceProgress = document.getElementById('workspaceProgress');
-    if (!toggle || !workspaceProgress) return;
-
-    setWorkspaceProgressCollapsed(workspaceProgress.classList.contains('is-collapsed'));
-    toggle.addEventListener('click', () => {
-      setWorkspaceProgressCollapsed(!workspaceProgress.classList.contains('is-collapsed'));
-    });
-  }
-
-  const getWorkspaceSnapshotPayload = () => {
-    const report = currentReport && currentReport.trim() ? currentReport : '';
-    if (!report) return null;
-
-    return {
-      version: 1,
-      timestamp: Date.now(),
-      prompt: document.getElementById('task')?.value || '',
-      report,
-      links: currentDownloadLinks || {},
-      competitiveAnalysis: currentCompetitiveAnalysis || null,
-      activeWorkspaceTab: getActiveWorkspaceTarget(),
-      reportSource: document.querySelector('select[name="report_source"]')?.value || 'web',
-      queryDomains: splitListInput(document.querySelector('input[name="query_domains"]')?.value || ''),
-      competitiveResearch: getCompetitiveResearchData(),
-      chatMessages: chatMessagesState
-        .filter((message) => message && message.role && message.content)
-        .map((message) => ({
-          role: message.role,
-          content: message.content
-        }))
-    };
-  }
-
-  const persistCurrentWorkspaceSnapshot = () => {
-    try {
-      const snapshot = getWorkspaceSnapshotPayload();
-      if (!snapshot) return;
-      localStorage.setItem(WORKSPACE_SNAPSHOT_KEY, JSON.stringify(snapshot));
-    } catch (error) {
-      console.warn('Unable to persist current workspace snapshot:', error);
-    }
-  }
-
-  const clearWorkspaceSnapshot = () => {
-    try {
-      localStorage.removeItem(WORKSPACE_SNAPSHOT_KEY);
-    } catch (error) {
-      console.warn('Unable to clear current workspace snapshot:', error);
-    }
-  }
-
-  const restoreChatMessages = (messages = []) => {
-    const chatMessages = document.getElementById('chatMessages');
-    if (!chatMessages || !Array.isArray(messages) || !messages.length) return;
-
-    const normalizedMessages = messages
-      .filter((message) => message && ['user', 'assistant'].includes(message.role) && message.content)
-      .map((message) => ({
-        role: message.role,
-        content: message.content
-      }));
-
-    if (!normalizedMessages.length) return;
-
-    chatMessages.innerHTML = '';
-    chatMessagesState = [];
-    normalizedMessages.forEach((message) => {
-      addChatMessage(message.content, message.role === 'user', false);
-    });
-    chatMessagesState = normalizedMessages;
-  }
-
-  const restoreWorkspaceSnapshot = () => {
-    try {
-      const rawSnapshot = localStorage.getItem(WORKSPACE_SNAPSHOT_KEY);
-      if (!rawSnapshot) return false;
-
-      const snapshot = JSON.parse(rawSnapshot);
-      if (!snapshot || !snapshot.report) return false;
-
-      const taskInput = document.getElementById('task');
-      if (taskInput && snapshot.prompt) {
-        taskInput.value = snapshot.prompt;
-      }
-
-      const reportSourceSelect = document.querySelector('select[name="report_source"]');
-      if (reportSourceSelect && snapshot.reportSource) {
-        reportSourceSelect.value = snapshot.reportSource;
-      }
-
-      const queryDomainsInput = document.querySelector('input[name="query_domains"]');
-      if (queryDomainsInput && Array.isArray(snapshot.queryDomains)) {
-        queryDomainsInput.value = snapshot.queryDomains.join(', ');
-      }
-
-      currentReport = snapshot.report;
-      allReports = snapshot.report;
-      currentDownloadLinks = snapshot.links || {};
-      currentCompetitiveAnalysis = snapshot.competitiveAnalysis || currentDownloadLinks.competitive_analysis_data || null;
-
-      const converter = new showdown.Converter({
-        ghCodeBlocks: true,
-        tables: true,
-        tasklists: true,
-        smartIndentationFix: true,
-        simpleLineBreaks: true,
-        openLinksInNewWindow: true,
-        parseImgDimensions: true
-      });
-
-      writeReport({ output: snapshot.report, type: 'report' }, converter, true, false);
-      updateState('finished');
-      updateDownloadLink({
-        output: {
-          ...currentDownloadLinks,
-          competitive_analysis_data: currentCompetitiveAnalysis
-        }
-      });
-      restoreChatMessages(snapshot.chatMessages || []);
-      collapseWorkspaceProgress();
-      setWorkspaceChatAvailable(true);
-      activateWorkspaceView(snapshot.activeWorkspaceTab === 'chat' ? 'chat' : 'report');
-      return true;
-    } catch (error) {
-      console.warn('Unable to restore current workspace snapshot:', error);
-      clearWorkspaceSnapshot();
-      return false;
     }
   }
 
@@ -960,6 +708,8 @@ const GPTResearcher = (() => {
     // Fill form with the entry data
     document.getElementById('task').value = entry.prompt; // Changed from entry.task for consistency
     
+    // Historical report type and tone are kept in stored metadata for compatibility,
+    // but the current product flow always uses one competitive research path.
     const reportSourceSelect = document.querySelector('select[name="report_source"]');
     if (reportSourceSelect && entry.reportSource) {
         reportSourceSelect.value = entry.reportSource;
@@ -992,12 +742,9 @@ const GPTResearcher = (() => {
     if (chatContainer) {
         chatContainer.style.display = 'none';
     }
-    chatMessagesState = [];
 
     // Reset UI state and report-specific buttons
     updateState('initial'); // This will hide copy buttons etc.
-    setWorkspaceChatAvailable(false);
-    hideWorkspaceProgress();
 
     const reportContent = entry.content || entry.answer || '';
     if (reportContent) {
@@ -1015,8 +762,6 @@ const GPTResearcher = (() => {
       writeReport({ output: reportContent, type: 'report' }, converter, true, false);
       updateState('finished');
       updateDownloadLink({ output: entry.links || {} });
-      currentDownloadLinks = entry.links || currentDownloadLinks;
-      currentCompetitiveAnalysis = entry.competitiveAnalysis || null;
       renderCompetitiveAnalysis(entry.competitiveAnalysis || {
         request: entry.competitiveResearch || {},
         intermediate_results: entry.intermediateResults || {},
@@ -1028,10 +773,6 @@ const GPTResearcher = (() => {
           official_like_source_rate: entry.qualityStats.officialLikeSourceRate,
         } : {})
       });
-      collapseWorkspaceProgress();
-      setWorkspaceChatAvailable(true);
-      activateWorkspaceView('report');
-      persistCurrentWorkspaceSnapshot();
     }
 
     // Close the history panel
@@ -1132,9 +873,9 @@ const GPTResearcher = (() => {
     document.getElementById('historyPanel').classList.add('open');
 
     const metadata = {
-      reportType: DEFAULT_REPORT_TYPE,
+      reportType: 'research_report',
       reportSource: document.querySelector('select[name="report_source"]')?.value,
-      tone: DEFAULT_TONE,
+      tone: 'Objective',
       queryDomains: splitListInput(document.querySelector('input[name="query_domains"]')?.value || ''),
       competitiveResearch: getCompetitiveResearchData(),
       competitiveAnalysis,
@@ -1272,10 +1013,6 @@ const GPTResearcher = (() => {
     allReports = '';
     currentReport = '';
     isFirstReport = true;
-    chatMessagesState = [];
-    currentDownloadLinks = null;
-    currentCompetitiveAnalysis = null;
-    clearWorkspaceSnapshot();
 
     // Hide the download bar
     const stickyDownloadsBar = document.getElementById('stickyDownloadsBar');
@@ -1288,7 +1025,6 @@ const GPTResearcher = (() => {
     if (chatContainer) {
       chatContainer.style.display = 'none';
     }
-    setWorkspaceChatAvailable(false);
 
     const imageContainer = document.getElementById('selectedImagesContainer')
     imageContainer.innerHTML = ''
@@ -1300,8 +1036,14 @@ const GPTResearcher = (() => {
       output: '正在收集资料并分析你的研究主题...',
     })
 
-    expandWorkspaceProgress();
-    activateWorkspaceView('report');
+    // Scroll to the "Research Progress" section
+    const researchOutputContainer = document.querySelector('.research-output-container');
+    if (researchOutputContainer) {
+        researchOutputContainer.scrollIntoView({
+            behavior: 'smooth',
+            block: 'start'
+        });
+    }
 
     dispose_socket = listenToSockEvents() // Assign the new dispose function
   }
@@ -1381,18 +1123,12 @@ const GPTResearcher = (() => {
       } else if (data.type === 'report') {
         // Add to reportContent for history
         reportContent += data.output;
-        currentReport = reportContent;
+
         writeReport({ output: data.output, type: 'report' }, converter, false, true);
       } else if (data.type === 'path') {
         updateState('finished')
         downloadLinkData = updateDownloadLink(data)
         isResearchActive = false;
-        currentReport = reportContent;
-
-        collapseWorkspaceProgress();
-        setWorkspaceChatAvailable(true);
-        activateWorkspaceView('report');
-        persistCurrentWorkspaceSnapshot();
 
         // Save to history now that research is complete
         if (reportContent && downloadLinkData) {
@@ -1401,6 +1137,7 @@ const GPTResearcher = (() => {
           // Reset variables for next research session
           reportContent = '';
           allReports = '';
+          currentReport = '';
           isFirstReport = true;
         }
 
@@ -1417,7 +1154,6 @@ const GPTResearcher = (() => {
         // Add AI message to chat
         if (data.content) {
           addChatMessage(data.content, false);
-          persistCurrentWorkspaceSnapshot();
         }
       }
     }
@@ -1445,9 +1181,11 @@ const GPTResearcher = (() => {
 
       const competitiveResearch = getCompetitiveResearchData();
       const task = buildCompetitiveResearchTask(competitiveResearch)
+      const report_type = "research_report"
       const report_source = document.querySelector(
         'select[name="report_source"]'
       ).value
+      const tone = "Objective"
       const agent = document.querySelector('input[name="agent"]:checked').value
       let source_urls = tags
 
@@ -1465,10 +1203,10 @@ const GPTResearcher = (() => {
 
       const requestData = {
         task: task,
-        report_type: DEFAULT_REPORT_TYPE,
+        report_type: report_type,
         report_source: report_source,
         source_urls: source_urls,
-        tone: DEFAULT_TONE,
+        tone: tone,
         agent: agent,
         query_domains: query_domains,
         max_search_results: parseInt(document.getElementById('maxSearchResults').value, 10) || 5,
@@ -1594,41 +1332,6 @@ const GPTResearcher = (() => {
     output.style.display = 'block';
   }
 
-  const renderToolCallsInProgress = (toolCalls = []) => {
-    const output = document.getElementById('output');
-    if (!output || !Array.isArray(toolCalls) || !toolCalls.length) return;
-
-    const existing = document.getElementById('progressToolList');
-    if (existing) existing.remove();
-
-    const labelMap = {
-      web_search: '网页检索',
-      repair_search: '补充检索',
-      scrape_url: '抓取网页',
-      extract_evidence: '提取证据',
-    };
-
-    const section = document.createElement('div');
-    section.id = 'progressToolList';
-    section.className = 'progress-tool-list agent_response agent_response--info';
-    section.innerHTML = `
-      <strong>补充检索记录</strong>
-      <ol>
-        ${toolCalls.slice(0, 9).map((call) => {
-          const tool = labelMap[call.tool] || call.tool || '工具步骤';
-          const status = call.status === 'success' ? '已完成' : (call.status || '已记录');
-          const detail = call.arguments?.query || call.reason || '';
-          return `<li><span>${escapeHtml(tool)}</span>${escapeHtml(status)}：${escapeHtml(detail)}</li>`;
-        }).join('')}
-      </ol>
-    `;
-    output.appendChild(section);
-    output.scrollTop = output.scrollHeight;
-    output.style.display = 'block';
-    workspaceProgressStarted = true;
-    syncWorkspaceProgressVisibility();
-  }
-
   const displaySubQuestions = (questions) => {
     const output = document.getElementById('output');
     const container = document.createElement('div');
@@ -1687,20 +1390,41 @@ const GPTResearcher = (() => {
       return;
     }
 
+    const request = analysis.request || {};
+    const intermediate = analysis.intermediate_results || {};
+    const matrix = analysis.competitive_matrix || {};
+    const coverage = matrix.coverage || {};
+    const sourceTierCounts = analysis.source_tiers?.counts || {};
     const agentTrace = analysis.agent_trace || {};
     const gapEvaluation = analysis.gap_evaluation || {};
+    const evidenceLedger = Array.isArray(analysis.evidence_ledger) ? analysis.evidence_ledger : [];
     const repairActions = Array.isArray(analysis.repair_actions) ? analysis.repair_actions : [];
     const toolCalls = Array.isArray(agentTrace.tool_calls) ? agentTrace.tool_calls : [];
-    renderToolCallsInProgress(toolCalls);
+    const evidenceDelta = agentTrace.evidence_delta || {};
     const hardGates = Array.isArray(gapEvaluation.hard_gates) ? gapEvaluation.hard_gates : (gapEvaluation.gaps || []);
     const softWarnings = Array.isArray(gapEvaluation.soft_warnings) ? gapEvaluation.soft_warnings : [];
+    const evaluatorMetrics = gapEvaluation.metrics || {};
+    const initialGapEvaluation = analysis.initial_gap_evaluation || {};
+    const finalGapEvaluation = analysis.final_gap_evaluation || gapEvaluation;
     const repairOutcome = analysis.repair_outcome || {};
+    const initialHardGates = Array.isArray(initialGapEvaluation.hard_gates) ? initialGapEvaluation.hard_gates : (initialGapEvaluation.gaps || []);
+    const finalHardGates = Array.isArray(finalGapEvaluation.hard_gates) ? finalGapEvaluation.hard_gates : (finalGapEvaluation.gaps || []);
     const resolvedGaps = Array.isArray(repairOutcome.resolved_gaps) ? repairOutcome.resolved_gaps : [];
     const unresolvedGaps = Array.isArray(repairOutcome.unresolved_gaps) ? repairOutcome.unresolved_gaps : [];
-    const sourceWarnings = analysis.source_warnings || [];
-    const timeScopeWarnings = analysis.time_scope_warnings || [];
+    const dimensions = Array.isArray(matrix.dimensions) ? matrix.dimensions : [];
+    const rows = Array.isArray(matrix.rows) ? matrix.rows : [];
+    const warnings = [
+      ...(analysis.source_warnings || []),
+      ...(analysis.time_scope_warnings || [])
+    ];
 
     const escape = (value) => escapeHtml(String(value ?? ''));
+    const riskLabels = {
+      high: '高风险',
+      medium: '中风险',
+      low_with_warnings: '低风险（有提示）',
+      low: '低风险'
+    };
     const gapTypeLabels = {
       unknown_official_profile: '官方主体未确认',
       missing_official_source: '缺少官方来源',
@@ -1709,196 +1433,138 @@ const GPTResearcher = (() => {
       time_scope_risk: '时效范围风险',
       time_uncertain_evidence: '日期不确定',
       source_quality_risk: '来源质量风险',
-      source_quality_warning: '来源质量提示',
-      candidate_official_source_found: '找到候选官方来源',
-      official_source_candidate_found: '找到候选官方来源',
-      low_credibility_source: '来源可信度偏低',
-      insufficient_official_evidence: '官方证据不足',
-      critical_fact_weak: '关键事实证据弱',
-      unresolved_after_repair: '补搜后仍需核验',
-      resolved_after_repair: '已补充证据'
+      source_quality_warning: '来源质量提示'
     };
-    const formatGapReasonForUser = (gap) => {
-      const backendMessage = String(gap.user_message || gap.userMessage || gap.user_facing_message || '').trim();
-      const suggestedAction = String(gap.suggested_action || gap.suggestedAction || '').trim();
-      if (backendMessage) {
-        return suggestedAction && !backendMessage.includes(suggestedAction)
-          ? `${backendMessage} 建议：${suggestedAction}`
-          : backendMessage;
-      }
-      const competitor = gap.competitor || '整体';
-      const dimension = gap.dimension || '相关维度';
-      const reason = String(gap.reason || '').trim();
-      const type = gap.type || '';
+    const renderGapItem = (gap) => `<li><span>${escape(gapTypeLabels[gap.type] || gap.type)}</span>${escape(gap.competitor || '整体')} / ${escape(gap.dimension || '-')}：${escape(gap.reason)}</li>`;
+    const cellsHtml = rows.map((row) => `
+      <tr>
+        <th>${escape(row.competitor)}</th>
+        ${dimensions.map((dimension) => {
+          const cell = row.cells?.[dimension] || {};
+          const isFound = cell.status === 'found';
+          return `<td class="${isFound ? 'matrix-found' : 'matrix-missing'}">${escape(cell.summary || '暂未提取')}</td>`;
+        }).join('')}
+      </tr>
+    `).join('');
 
-      if (type === 'candidate_official_source_found' || type === 'official_source_candidate_found') {
-        return `${competitor} 的“${dimension}”已找到疑似官方资料，但仍需要人工确认是否确实属于该产品或公司。`;
-      }
-
-      if (type === 'unknown_official_profile' || type === 'missing_official_source') {
-        return `${competitor} 的“${dimension}”还缺少明确官方资料支撑，需要进一步确认官网、公告或官方账号信息。`;
-      }
-
-      if (type === 'weak_critical_evidence' || type === 'critical_fact_weak' || type === 'missing_dimension_evidence') {
-        return `${competitor} 的“${dimension}”证据还不够充分，当前结论需要补充更可靠来源后再确认。`;
-      }
-
-      if (type === 'time_scope_risk' || type === 'time_uncertain_evidence') {
-        return `${competitor} 的“${dimension}”信息时间不够明确，可能需要核验是否仍是最新公开情况。`;
-      }
-
-      if (type === 'source_quality_risk' || type === 'source_quality_warning' || type === 'low_credibility_source') {
-        return `${competitor} 的“${dimension}”主要依据来源可信度一般，建议优先用官方或高可信媒体交叉验证。`;
-      }
-
-      return reason
-        ? `${competitor} 的“${dimension}”：${reason}`
-        : `${competitor} 的“${dimension}”需要进一步核验。`;
-    };
-    function renderGapItem(gap) {
-      return `<li><span>${escape(gapTypeLabels[gap.type] || '需要核验')}</span>${escape(formatGapReasonForUser(gap))}</li>`;
-    }
-
-    const extractUrlsFromText = (text = '') => {
-      const matches = String(text || '').match(/https?:\/\/[^\s)\]>"']+/g) || [];
-      return matches.map((url) => url.replace(/[.,;，。；、]+$/, ''));
-    };
-    const normalizeUrl = (url = '') => String(url || '').trim().replace(/[?#].*$/, '').replace(/\/$/, '');
-    const getReportReferencedUrls = () => {
-      const reportContainer = document.getElementById('reportContainer');
-      const urls = new Set(extractUrlsFromText(currentReport || reportContainer?.innerText || ''));
-      reportContainer?.querySelectorAll('a[href]').forEach((link) => {
-        const href = link.getAttribute('href') || '';
-        if (/^https?:\/\//.test(href)) urls.add(href);
-      });
-      return Array.from(urls);
-    };
-    const reportReferencedUrls = getReportReferencedUrls();
-    const reportReferencedUrlKeys = new Set(reportReferencedUrls.map(normalizeUrl));
-    const sourceCandidates = [
-      ...(analysis.urls || []),
-      ...(analysis.intermediate_results?.source_urls || []),
-      ...(analysis.evidence_ledger || []).flatMap((item) => item.urls || item.source_urls || (item.url ? [item.url] : [])),
-    ].filter(Boolean);
-    const officialUrlKeys = new Set((analysis.official_like_urls || []).map(normalizeUrl));
-    const referencedSources = [];
-    const seenSourceKeys = new Set();
-    sourceCandidates.forEach((url) => {
-      const key = normalizeUrl(url);
-      if (!key || seenSourceKeys.has(key) || !reportReferencedUrlKeys.has(key)) return;
-      seenSourceKeys.add(key);
-      referencedSources.push({
-        url,
-        isOfficialLike: officialUrlKeys.has(key)
-      });
-    });
-    reportReferencedUrls.forEach((url) => {
-      const key = normalizeUrl(url);
-      if (!key || seenSourceKeys.has(key)) return;
-      seenSourceKeys.add(key);
-      referencedSources.push({
-        url,
-        isOfficialLike: officialUrlKeys.has(key)
-      });
-    });
-    const sourceLabel = (url) => {
-      try {
-        const parsed = new URL(url);
-        return parsed.hostname.replace(/^www\./, '');
-      } catch (error) {
-        return url;
-      }
-    };
-    const reportText = (currentReport || document.getElementById('reportContainer')?.innerText || '').toLowerCase();
-    const filterReportRelatedGaps = (gaps = []) => {
-      const seen = new Set();
-      return gaps.filter((gap) => {
-        const key = [gap.type, gap.competitor, gap.dimension, gap.user_message || gap.reason].join('|');
-        if (seen.has(key)) return false;
-        seen.add(key);
-        const competitor = String(gap.competitor || '').trim().toLowerCase();
-        const dimension = String(gap.dimension || '').trim().toLowerCase();
-        if (competitor && !reportText.includes(competitor)) return false;
-        if (dimension && !reportText.includes(dimension)) return false;
-        return true;
-      });
-    };
-    const reportRelatedGaps = filterReportRelatedGaps([
-      ...unresolvedGaps,
-      ...hardGates,
-      ...softWarnings
-    ]).slice(0, 5);
-    const scopeNotes = [];
-    if (timeScopeWarnings.length) {
-      scopeNotes.push('报告中部分时间信息可能属于背景材料；涉及“近期更新”的结论建议以报告正文引用的发布日期为准。');
-    }
-    if (sourceWarnings.length && referencedSources.length) {
-      scopeNotes.push('部分结论主要依赖公开网页资料；正式使用前建议优先复核报告已引用的官方或高可信来源。');
-    }
-    const processSummaryItems = [
-      '完成公开资料搜索、抓取与报告生成',
-      agentTrace.enabled ? '完成证据校验与可信度检查' : '',
-      repairActions.length ? `执行 ${repairActions.length} 次补充检索` : '',
-      resolvedGaps.length ? `补充确认 ${resolvedGaps.length} 条信息` : ''
-    ].filter(Boolean);
-
-    if (!referencedSources.length && !reportRelatedGaps.length && !scopeNotes.length && !processSummaryItems.length) {
-      container.innerHTML = '';
-      container.style.display = 'none';
-      return;
-    }
-
-    function renderReportEvidencePanel() {
-      return `
-      <div class="report-evidence-panel">
-        <div class="report-evidence-header">
-          <div>
-            <h3>报告依据与可信度</h3>
-            <p class="report-evidence-note">本模块说明正式报告生成时参考了哪些已引用资料、哪些结论仍需谨慎确认；下方“研究报告”是最终阅读版本。</p>
-          </div>
-          <div class="report-evidence-stats" aria-label="报告可信度概览">
-            <span><strong>${escape(referencedSources.length)}</strong>引用来源</span>
-            <span><strong>${escape(referencedSources.filter((source) => source.isOfficialLike).length)}</strong>官方倾向</span>
-            <span><strong>${escape(reportRelatedGaps.length)}</strong>待确认</span>
-          </div>
+    container.innerHTML = `
+      <div class="analysis-summary-panel">
+        <div class="analysis-summary-header">
+          <h3>研究过程摘要</h3>
+          <span>确定性后处理结果</span>
         </div>
-        <div class="report-evidence-body">
-          ${referencedSources.length ? `
-            <div class="report-evidence-section">
-              <strong>正式报告引用的来源</strong>
-              <ul class="report-source-list">
-                ${referencedSources.slice(0, 6).map((source) => `
-                  <li>
-                    <a href="${escape(source.url)}" target="_blank" rel="noopener noreferrer">${escape(sourceLabel(source.url))}</a>
-                    ${source.isOfficialLike ? '<span>官方倾向</span>' : ''}
-                  </li>
-                `).join('')}
-              </ul>
-            </div>
-          ` : ''}
-          ${reportRelatedGaps.length ? `
-            <div class="report-evidence-section agent-gap-list">
-              <strong>报告中需要谨慎确认的信息</strong>
-              <ul>${reportRelatedGaps.map(renderGapItem).join('')}</ul>
-            </div>
-          ` : ''}
-          ${scopeNotes.length ? `
-            <div class="report-evidence-section analysis-warnings">
-              <strong>需要留意的口径</strong>
-              <ul>${scopeNotes.map((note) => `<li>${escape(note)}</li>`).join('')}</ul>
-            </div>
-          ` : ''}
-          <div class="report-evidence-section">
-            <strong>生成过程概览</strong>
-            <ul class="report-process-list">
-              ${processSummaryItems.map((item) => `<li>${escape(item)}</li>`).join('')}
-            </ul>
-          </div>
+        <div class="analysis-summary-grid">
+          <div><strong>研究主题</strong><span>${escape(request.research_topic || '-')}</span></div>
+          <div><strong>竞品数量</strong><span>${escape((request.competitors || []).length)}</span></div>
+          <div><strong>子问题数</strong><span>${escape((intermediate.sub_queries || []).length)}</span></div>
+          <div><strong>来源 URL</strong><span>${escape((intermediate.source_urls || []).length || analysis.source_count || 0)}</span></div>
+          <div><strong>官方倾向来源</strong><span>${escape(analysis.official_like_source_count || 0)}</span></div>
+          <div><strong>来源分级</strong><span>${escape(`S${sourceTierCounts.S || 0} / A${sourceTierCounts.A || 0} / B${sourceTierCounts.B || 0} / C${sourceTierCounts.C || 0}`)}</span></div>
+          <div><strong>章节完整率</strong><span>${escape(Math.round((analysis.section_completion_rate || 0) * 100))}%</span></div>
+          <div><strong>矩阵覆盖率</strong><span>${escape(Math.round((coverage.coverage_rate || 0) * 100))}%</span></div>
         </div>
+        ${intermediate.sub_queries?.length ? `
+          <div class="analysis-subqueries">
+            <strong>Planner 生成的子问题</strong>
+            <ol>${intermediate.sub_queries.slice(0, 8).map((query) => `<li>${escape(query)}</li>`).join('')}</ol>
+          </div>
+        ` : ''}
+        ${agentTrace.enabled ? `
+          <div class="agent-trace-panel">
+            <div class="agent-trace-header">
+              <strong>Agent 闭环过程</strong>
+              <span>${escape(agentTrace.paradigm || 'plan-and-execute + evaluator-driven repair')}</span>
+            </div>
+            <div class="agent-trace-grid">
+              <div><strong>评估风险</strong><span>${escape(gapEvaluation.overall_risk || 'low')}</span></div>
+              <div><strong>优先缺口</strong><span>${escape((gapEvaluation.gaps || []).length || 0)}</span></div>
+              <div><strong>补救动作</strong><span>${escape(repairActions.length)}</span></div>
+              <div><strong>工具步骤</strong><span>${escape(toolCalls.length)}</span></div>
+              <div><strong>证据增量</strong><span>${escape(`${evidenceDelta.before || 0} -> ${evidenceDelta.after || evidenceLedger.length || 0}`)}</span></div>
+              <div><strong>补搜来源</strong><span>${escape(analysis.repaired_source_count || 0)}</span></div>
+            </div>
+            <div class="agent-repair-outcome">
+              <strong>Repair Loop 闭环结果</strong>
+              <div class="agent-trace-grid">
+                <div><strong>补搜结果</strong><span>${escape(({ resolved: '已解决', partially_resolved: '部分解决', unresolved: '未解决，需人工确认', not_triggered: '未触发补搜' })[repairOutcome.status] || repairOutcome.status || '未记录')}</span></div>
+                <div><strong>首次硬门槛</strong><span>${escape(initialHardGates.length)}</span></div>
+                <div><strong>补搜后硬门槛</strong><span>${escape(finalHardGates.length)}</span></div>
+                <div><strong>已解决缺口</strong><span>${escape(resolvedGaps.length)}</span></div>
+                <div><strong>未解决缺口</strong><span>${escape(unresolvedGaps.length)}</span></div>
+                <div><strong>新增证据</strong><span>${escape(repairOutcome.evidence_added ?? 0)}</span></div>
+                <div><strong>补搜新增来源</strong><span>${escape(repairOutcome.repaired_source_count ?? analysis.repaired_source_count ?? 0)}</span></div>
+              </div>
+            </div>
+            ${resolvedGaps.length ? `
+              <div class="agent-gap-list agent-resolved-gap-list">
+                <strong>补搜已解决缺口</strong>
+                <ul>${resolvedGaps.slice(0, 5).map(renderGapItem).join('')}</ul>
+              </div>
+            ` : ''}
+            ${unresolvedGaps.length ? `
+              <div class="agent-gap-list agent-unresolved-gap-list">
+                <strong>补搜后仍未解决</strong>
+                <ul>${unresolvedGaps.slice(0, 5).map(renderGapItem).join('')}</ul>
+              </div>
+            ` : ''}
+            <div class="agent-enterprise-evaluator">
+              <strong>企业级 Evaluator 结果</strong>
+              <div class="agent-trace-grid">
+                <div><strong>风险等级</strong><span>${escape(riskLabels[gapEvaluation.overall_risk] || gapEvaluation.overall_risk || '低风险')}</span></div>
+                <div><strong>硬门槛</strong><span>${escape(hardGates.length)}</span></div>
+                <div><strong>软风险</strong><span>${escape(softWarnings.length)}</span></div>
+                <div><strong>官方源数</strong><span>${escape(evaluatorMetrics.official_source_count ?? sourceTierCounts.S ?? 0)}</span></div>
+                <div><strong>低可信占比</strong><span>${escape(Math.round((evaluatorMetrics.low_credibility_source_rate || 0) * 100))}%</span></div>
+              </div>
+            </div>
+            ${hardGates.length ? `
+              <div class="agent-gap-list">
+                <strong>Evaluator 硬门槛（触发补搜）</strong>
+                <ul>${hardGates.slice(0, 5).map(renderGapItem).join('')}</ul>
+              </div>
+            ` : ''}
+            ${softWarnings.length ? `
+              <div class="agent-gap-list agent-soft-warning-list">
+                <strong>Evaluator 软风险（提示核验）</strong>
+                <ul>${softWarnings.slice(0, 5).map(renderGapItem).join('')}</ul>
+              </div>
+            ` : ''}
+            ${gapEvaluation.gaps?.length ? `
+              <div class="agent-gap-list">
+                <strong>Evaluator 发现的缺口</strong>
+                <ul>${gapEvaluation.gaps.slice(0, 5).map((gap) => `<li><span>${escape(gap.type)}</span>${escape(gap.competitor || '整体')} / ${escape(gap.dimension || '-')}：${escape(gap.reason)}</li>`).join('')}</ul>
+              </div>
+            ` : ''}
+            ${toolCalls.length ? `
+              <div class="agent-tool-list">
+                <strong>受控工具调用轨迹</strong>
+                <ol>${toolCalls.slice(0, 9).map((call) => `<li><span>${escape(call.tool)}</span>${escape(call.status)}：${escape(call.arguments?.query || call.reason || '')}</li>`).join('')}</ol>
+              </div>
+            ` : ''}
+          </div>
+        ` : ''}
+        ${warnings.length ? `
+          <div class="analysis-warnings">
+            <strong>后处理风险提示</strong>
+            <ul>${warnings.map((warning) => `<li>${escape(warning)}</li>`).join('')}</ul>
+          </div>
+        ` : ''}
+        ${rows.length && dimensions.length ? `
+          <div class="analysis-matrix-wrap">
+            <strong>基础竞品矩阵</strong>
+            <table class="analysis-matrix">
+              <thead>
+                <tr>
+                  <th>竞品</th>
+                  ${dimensions.map((dimension) => `<th>${escape(dimension)}</th>`).join('')}
+                </tr>
+              </thead>
+              <tbody>${cellsHtml}</tbody>
+            </table>
+          </div>
+        ` : ''}
       </div>
     `;
-    }
-    container.innerHTML = renderReportEvidencePanel();
     container.style.display = 'block';
   }
 
@@ -1910,7 +1576,6 @@ const GPTResearcher = (() => {
 
     const { pdf, docx, md, json, competitive_analysis } = data.output;
     const competitiveAnalysis = data.output.competitive_analysis_data || null;
-    currentCompetitiveAnalysis = competitiveAnalysis;
     console.log('Received paths:', { pdf, docx, md, json, competitive_analysis });
     renderCompetitiveAnalysis(competitiveAnalysis);
 
@@ -1923,13 +1588,11 @@ const GPTResearcher = (() => {
       competitive_analysis,
       competitive_analysis_data: competitiveAnalysis
     };
-    currentDownloadLinks = currentLinks;
 
     const disableLink = (element, reason = '该格式暂未生成') => {
       if (!element) return;
       element.removeAttribute('href');
       element.classList.add('disabled');
-      element.classList.add('is-unavailable');
       element.setAttribute('onclick', 'return false;');
       element.title = reason;
     };
@@ -1940,7 +1603,6 @@ const GPTResearcher = (() => {
         console.log(`Setting ${id} href to:`, path);
         element.setAttribute('href', path);
         element.classList.remove('disabled');
-        element.classList.remove('is-unavailable');
         element.removeAttribute('onclick');
         if (availableTitle) {
           element.title = availableTitle;
@@ -1956,12 +1618,12 @@ const GPTResearcher = (() => {
     updateLink('downloadLinkWord', docx, '下载 Word 文档');
     updateLink('downloadLinkMd', md, '下载 Markdown 文件');
     updateLink('downloadLinkJson', json, '下载运行日志 JSON');
-    document.getElementById('downloadLink')?.classList.toggle('is-unavailable', !pdf);
 
-    // Update duplicate report buttons above the report
+    // Update duplicate buttons above the report
     updateLink('downloadLinkTop', pdf, '下载 PDF 报告');
     updateLink('downloadLinkWordTop', docx, '下载 Word 文档');
     updateLink('downloadLinkMdTop', md, '下载 Markdown 文件');
+    updateLink('downloadLinkJsonTop', json, '下载运行日志 JSON');
 
     // Make sure download buttons are visible when download links are ready
     showDownloadPanels();
@@ -1975,7 +1637,6 @@ const GPTResearcher = (() => {
     downloadButtons.forEach((button) => {
       button.removeAttribute('href');
       button.classList.add('disabled');
-      button.classList.add('is-unavailable');
       button.setAttribute('onclick', 'return false;');
       button.title = '该格式暂未生成';
     });
@@ -2046,6 +1707,11 @@ const GPTResearcher = (() => {
         if (copyBtnTop) {
           copyBtnTop.style.display = 'none';
         }
+        // Hide the JSON button container
+        const jsonContainer = document.getElementById('jsonButtonContainer');
+        if (jsonContainer) {
+          jsonContainer.style.display = 'none';
+        }
         break
       case 'finished':
         status = '研究已完成'
@@ -2071,10 +1737,16 @@ const GPTResearcher = (() => {
           topCopyButton.addEventListener('click', copyToClipboard);
         }
 
+        // Show JSON button container
+        const jsonButtonContainer = document.getElementById('jsonButtonContainer');
+        if (jsonButtonContainer) {
+          jsonButtonContainer.style.display = 'block';
+        }
+
         // Show chat container when research is finished
         chatContainer = document.getElementById('chatContainer');
         if (chatContainer) {
-          chatContainer.style.display = 'flex';
+          chatContainer.style.display = 'block';
           // Initialize chat if not already initialized
           initChat();
         }
@@ -2097,6 +1769,11 @@ const GPTResearcher = (() => {
         const initialCopyBtnTop = document.getElementById('copyToClipboardTop');
         if (initialCopyBtnTop) {
           initialCopyBtnTop.style.display = 'none';
+        }
+        // Hide the JSON button container
+        const initialJsonContainer = document.getElementById('jsonButtonContainer');
+        if (initialJsonContainer) {
+          initialJsonContainer.style.display = 'none';
         }
         break
       default:
@@ -2162,41 +1839,23 @@ const GPTResearcher = (() => {
 
   const displaySelectedImages = (data) => {
     const imageContainer = document.getElementById('selectedImagesContainer')
-    if (!imageContainer) return;
-
-    imageContainer.innerHTML = ''
-    imageContainer.classList.remove('has-valid-images')
-    imageContainer.style.display = 'none'
-
+    //imageContainer.innerHTML = '<h3>Selected Images</h3>'
     const images = JSON.parse(data.output)
-    let validImageCount = 0
     console.log("Received images:", images);  // Debug log
     if (images && images.length > 0) {
       images.forEach(imageUrl => {
         const imgElement = document.createElement('img')
+        imgElement.src = imageUrl
         imgElement.alt = '研究图片'
         imgElement.style.maxWidth = '200px'
         imgElement.style.margin = '5px'
         imgElement.style.cursor = 'pointer'
         imgElement.onclick = () => showImageDialog(imageUrl)
-
-        imgElement.onload = () => {
-          validImageCount += 1
-          imageContainer.appendChild(imgElement)
-          imageContainer.classList.add('has-valid-images')
-          imageContainer.style.display = 'grid'
-        }
-
-        imgElement.onerror = () => {
-          imgElement.remove()
-          if (validImageCount === 0) {
-            imageContainer.classList.remove('has-valid-images')
-            imageContainer.style.display = 'none'
-          }
-        }
-
-        imgElement.src = imageUrl
+        imageContainer.appendChild(imgElement)
       })
+      imageContainer.style.display = 'block'
+    } else {
+      imageContainer.innerHTML += '<p>本次研究未找到相关图片。</p>'
     }
   }
 
@@ -2558,6 +2217,7 @@ const GPTResearcher = (() => {
   const initChat = () => {
     const chatInput = document.getElementById('chatInput');
     const sendChatBtn = document.getElementById('sendChatBtn');
+    const voiceInputBtn = document.getElementById('voiceInputBtn');
 
     if (!chatInput || !sendChatBtn) return;
 
@@ -2566,53 +2226,31 @@ const GPTResearcher = (() => {
     if (chatMessages) {
       chatMessages.innerHTML = '';
     }
-    chatMessagesState = [];
 
-    if (chatInput.dataset.chatInitialized !== 'true') {
-      // Add event listeners for chat input
-      chatInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-          e.preventDefault();
-          sendChatMessage();
-        }
-      });
+    // Add event listeners for chat input
+    chatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendChatMessage();
+      }
+    });
 
-      sendChatBtn.addEventListener('click', sendChatMessage);
+    sendChatBtn.addEventListener('click', sendChatMessage);
 
-      // Auto-resize textarea as content grows
-      chatInput.addEventListener('input', () => {
-        chatInput.style.height = 'auto';
-        chatInput.style.height = Math.min(chatInput.scrollHeight, 56) + 'px';
-      });
-
-      chatInput.dataset.chatInitialized = 'true';
+    // Initialize speech recognition if supported
+    if (voiceInputBtn) {
+      initSpeechRecognition(voiceInputBtn, chatInput);
     }
+
+    // Auto-resize textarea as content grows
+    chatInput.addEventListener('input', () => {
+      chatInput.style.height = 'auto';
+      chatInput.style.height = (chatInput.scrollHeight) + 'px';
+    });
 
     // Add welcome message
-    addChatMessage('我可以继续回答关于这份研究报告的问题。你想进一步了解什么？', false, false);
+    addChatMessage('我可以继续回答关于这份研究报告的问题。你想进一步了解什么？', false);
   }
-
-  const getCurrentChatReportContext = () => {
-    if (currentReport && currentReport.trim()) {
-      return currentReport.trim();
-    }
-
-    const reportContainer = document.getElementById('reportContainer');
-    return reportContainer ? reportContainer.innerText.trim() : '';
-  };
-
-  const buildChatPayload = (message) => {
-    const outgoingMessages = [
-      ...chatMessagesState,
-      { role: 'user', content: message }
-    ];
-
-    return {
-      message,
-      report: getCurrentChatReportContext(),
-      messages: outgoingMessages
-    };
-  };
 
   // Initialize speech recognition
   const initSpeechRecognition = (button, inputElement) => {
@@ -2708,7 +2346,7 @@ const GPTResearcher = (() => {
     // Don't attempt too many reconnections
     if (reconnectAttempts >= maxReconnectAttempts) {
       console.error(`Failed to reconnect after ${maxReconnectAttempts} attempts`);
-      addChatMessage(`重连 ${maxReconnectAttempts} 次后仍失败，请刷新页面。`, false, false);
+      addChatMessage(`重连 ${maxReconnectAttempts} 次后仍失败，请刷新页面。`, false);
       return false;
     }
 
@@ -2719,7 +2357,7 @@ const GPTResearcher = (() => {
     console.log(`Attempting to reconnect (${reconnectAttempts}/${maxReconnectAttempts}) in ${backoff}ms...`);
 
     // Show reconnection status to user
-    addChatMessage(`连接已断开，正在尝试重连（${reconnectAttempts}/${maxReconnectAttempts}）...`, false, false);
+    addChatMessage(`连接已断开，正在尝试重连（${reconnectAttempts}/${maxReconnectAttempts}）...`, false);
 
     // Try to reconnect after delay
     setTimeout(() => {
@@ -2762,21 +2400,19 @@ const GPTResearcher = (() => {
     if (!chatInput || !chatInput.value.trim()) return;
 
     const message = chatInput.value.trim();
-    const chatPayload = buildChatPayload(message);
 
     // Add user message to chat
     addChatMessage(message, true);
-    persistCurrentWorkspaceSnapshot();
 
     // Clear input
     chatInput.value = '';
-    chatInput.style.height = '36px';
+    chatInput.style.height = 'auto';
 
     // Add loading indicator
     const loadingId = addLoadingIndicator();
 
     // Prepare the message to send
-    const messageToSend = `chat ${JSON.stringify(chatPayload)}`;
+    const messageToSend = `chat ${JSON.stringify({ message: message })}`;
 
     // Send message through WebSocket
     if (socket && socket.readyState === WebSocket.OPEN) {
@@ -2793,22 +2429,15 @@ const GPTResearcher = (() => {
       // Attempt to reconnect and queue the message to be sent after reconnection
       if (!reconnectWebSocket(messageToSend)) {
         // If reconnection fails or max attempts reached
-        addChatMessage('消息发送失败，当前连接不可用。', false, false);
+        addChatMessage('消息发送失败，当前连接不可用。', false);
       }
     }
   }
 
   // Add a chat message to the UI
-  const addChatMessage = (message, isUser = false, track = true) => {
+  const addChatMessage = (message, isUser = false) => {
     const chatMessages = document.getElementById('chatMessages');
     if (!chatMessages) return;
-
-    if (track && message) {
-      chatMessagesState.push({
-        role: isUser ? 'user' : 'assistant',
-        content: message
-      });
-    }
 
     const messageEl = document.createElement('div');
     messageEl.className = `chat-message ${isUser ? 'user-message' : 'ai-message'}`;
@@ -2823,7 +2452,7 @@ const GPTResearcher = (() => {
         tasklists: true,
         openLinksInNewWindow: true
       });
-      processedMessage = sanitizeHtml(converter.makeHtml(message));
+      processedMessage = converter.makeHtml(message);
     }
 
     // Set message content
@@ -2836,21 +2465,8 @@ const GPTResearcher = (() => {
     timestampEl.textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     messageEl.appendChild(timestampEl);
 
-    if (isUser) {
-      chatMessages.appendChild(messageEl);
-    } else {
-      const messageRow = document.createElement('div');
-      messageRow.className = 'chat-message-row ai-row';
-
-      const chatAiAvatar = document.createElement('img');
-      chatAiAvatar.className = 'chat-ai-avatar';
-      chatAiAvatar.src = '/static/jingyan-agent-cat.png';
-      chatAiAvatar.alt = '竞研 Agent';
-
-      messageRow.appendChild(chatAiAvatar);
-      messageRow.appendChild(messageEl);
-      chatMessages.appendChild(messageRow);
-    }
+    // Add to chat container
+    chatMessages.appendChild(messageEl);
 
     // Scroll to bottom
     chatMessages.scrollTop = chatMessages.scrollHeight;
