@@ -15,6 +15,7 @@ concurrency:
 
 jobs:
   deploy:
+    name: Deploy
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -24,22 +25,77 @@ jobs:
 
       - name: Configure SSH
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SSH_PRIVATE_KEY_B64: ${{ secrets.SERVER_SSH_KEY_B64 }}
           SSH_KNOWN_HOSTS: ${{ secrets.SERVER_KNOWN_HOSTS }}
         run: |
+          set -euo pipefail
+
+          if [ -z "$SSH_PRIVATE_KEY_B64" ]; then
+            echo "SERVER_SSH_KEY_B64 is empty"
+            exit 1
+          fi
+
+          if [ -z "$SSH_KNOWN_HOSTS" ]; then
+            echo "SERVER_KNOWN_HOSTS is empty"
+            exit 1
+          fi
+
           install -m 700 -d ~/.ssh
 
-          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          printf '%s' "$SSH_PRIVATE_KEY_B64" \
+            | base64 --decode \
+            > ~/.ssh/id_ed25519
+
           chmod 600 ~/.ssh/id_ed25519
 
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf '%s\n' "$SSH_KNOWN_HOSTS" \
+            > ~/.ssh/known_hosts
+
           chmod 600 ~/.ssh/known_hosts
+
+          ssh-keygen -y \
+            -f ~/.ssh/id_ed25519 \
+            >/dev/null
+
+          echo "SSH private key loaded successfully"
+
+      - name: Test SSH connection
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+        run: |
+          set -euo pipefail
+
+          ssh \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=30 \
+            "$SERVER_USER@$SERVER_HOST" \
+            'echo "SSH connection successful: $(whoami)@$(hostname)"'
+
+      - name: Prepare release directory
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+        run: |
+          set -euo pipefail
+
+          ssh \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=30 \
+            "$SERVER_USER@$SERVER_HOST" \
+            'rm -rf /home/deploy/competitive-agent-release &&
+             mkdir -p /home/deploy/competitive-agent-release'
 
       - name: Upload latest code
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
         run: |
+          set -euo pipefail
+
           rsync -az --delete \
             --exclude='.git/' \
             --exclude='.github/' \
@@ -51,40 +107,173 @@ jobs:
             --exclude='my-docs/' \
             --exclude='__pycache__/' \
             --exclude='*.pyc' \
-            -e "ssh -o BatchMode=yes -o ServerAliveInterval=30" \
+            --exclude='.server.pid' \
+            -e "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=30" \
             ./ \
-            "$SERVER_USER@$SERVER_HOST:/opt/competitive-research-agent/"
+            "$SERVER_USER@$SERVER_HOST:/home/deploy/competitive-agent-release/"
 
-      - name: Install dependencies and restart
+      - name: Deploy and restart service
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
         run: |
-          ssh \
-            -o BatchMode=yes \
-            -o ServerAliveInterval=30 \
-            "$SERVER_USER@$SERVER_HOST" <<'REMOTE'
           set -euo pipefail
 
-          cd /opt/competitive-research-agent
+          ssh \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=30 \
+            "$SERVER_USER@$SERVER_HOST" \
+            'bash -s' <<'REMOTE'
+          set -euo pipefail
 
-          /opt/competitive-research-agent/.venv/bin/python \
-            -m pip install \
-            -r requirements.txt \
-            -i https://pypi.tuna.tsinghua.edu.cn/simple \
-            --prefer-binary \
-            --timeout 120 \
-            --retries 5
+          APP_DIR="/opt/competitive-research-agent"
+          RELEASE_DIR="/home/deploy/competitive-agent-release"
+          BACKUP_DIR="/home/deploy/competitive-agent-backup"
+          PYTHON_BIN="$APP_DIR/.venv/bin/python"
+          SERVICE_NAME="competitive-research-agent"
 
-          sudo /usr/bin/systemctl restart competitive-research-agent
+          echo "===== Preparing deployment ====="
 
-          sleep 8
+          if [ ! -d "$RELEASE_DIR" ]; then
+            echo "Release directory does not exist"
+            exit 1
+          fi
 
-          sudo /usr/bin/systemctl is-active competitive-research-agent
+          if [ ! -f "$RELEASE_DIR/requirements.txt" ]; then
+            echo "requirements.txt does not exist in release"
+            exit 1
+          fi
 
-          curl -fsS \
-            http://127.0.0.1:18000/ \
-            >/dev/null
+          if [ ! -x "$PYTHON_BIN" ]; then
+            echo "Python virtual environment does not exist: $PYTHON_BIN"
+            exit 1
+          fi
 
-          echo "Deployment successful"
+          rm -rf "$BACKUP_DIR"
+          mkdir -p "$BACKUP_DIR"
+
+          echo "===== Backing up current code ====="
+
+          rsync -a --delete \
+            --exclude='.env' \
+            --exclude='.venv/' \
+            --exclude='data/' \
+            --exclude='outputs/' \
+            --exclude='logs/' \
+            --exclude='my-docs/' \
+            --exclude='__pycache__/' \
+            --exclude='*.pyc' \
+            --exclude='.server.pid' \
+            "$APP_DIR/" \
+            "$BACKUP_DIR/"
+
+          REQUIREMENTS_CHANGED=1
+
+          if [ -f "$BACKUP_DIR/requirements.txt" ] && \
+             cmp -s \
+               "$BACKUP_DIR/requirements.txt" \
+               "$RELEASE_DIR/requirements.txt"; then
+            REQUIREMENTS_CHANGED=0
+          fi
+
+          echo "===== Updating application code ====="
+
+          rsync -a --delete \
+            --exclude='.env' \
+            --exclude='.venv/' \
+            --exclude='data/' \
+            --exclude='outputs/' \
+            --exclude='logs/' \
+            --exclude='my-docs/' \
+            --exclude='__pycache__/' \
+            --exclude='*.pyc' \
+            --exclude='.server.pid' \
+            "$RELEASE_DIR/" \
+            "$APP_DIR/"
+
+          mkdir -p \
+            "$APP_DIR/data" \
+            "$APP_DIR/outputs" \
+            "$APP_DIR/logs" \
+            "$APP_DIR/my-docs"
+
+          echo "===== Installing dependencies and restarting ====="
+
+          if ! (
+            set -e
+
+            if [ "$REQUIREMENTS_CHANGED" -eq 1 ]; then
+              echo "requirements.txt changed, installing dependencies"
+
+              "$PYTHON_BIN" \
+                -m pip install \
+                -r "$APP_DIR/requirements.txt" \
+                -i https://pypi.tuna.tsinghua.edu.cn/simple \
+                --prefer-binary \
+                --timeout 120 \
+                --retries 5
+            else
+              echo "requirements.txt unchanged, skipping dependency installation"
+            fi
+
+            sudo /usr/bin/systemctl restart "$SERVICE_NAME"
+
+            echo "Waiting for application health check"
+
+            HEALTHY=0
+
+            for ATTEMPT in $(seq 1 12); do
+              if curl -fsS \
+                http://127.0.0.1:18000/ \
+                >/dev/null; then
+                HEALTHY=1
+                break
+              fi
+
+              echo "Health check attempt $ATTEMPT failed"
+              sleep 5
+            done
+
+            if [ "$HEALTHY" -ne 1 ]; then
+              echo "Application health check failed"
+              exit 1
+            fi
+
+            sudo /usr/bin/systemctl is-active "$SERVICE_NAME"
+          ); then
+            echo "===== Deployment failed, rolling back ====="
+
+            rsync -a --delete \
+              --exclude='.env' \
+              --exclude='.venv/' \
+              --exclude='data/' \
+              --exclude='outputs/' \
+              --exclude='logs/' \
+              --exclude='my-docs/' \
+              --exclude='__pycache__/' \
+              --exclude='*.pyc' \
+              --exclude='.server.pid' \
+              "$BACKUP_DIR/" \
+              "$APP_DIR/"
+
+            if [ -f "$APP_DIR/requirements.txt" ]; then
+              "$PYTHON_BIN" \
+                -m pip install \
+                -r "$APP_DIR/requirements.txt" \
+                -i https://pypi.tuna.tsinghua.edu.cn/simple \
+                --prefer-binary \
+                --timeout 120 \
+                --retries 5
+            fi
+
+            sudo /usr/bin/systemctl restart "$SERVICE_NAME"
+
+            echo "Rollback completed"
+            exit 1
+          fi
+
+          echo "===== Deployment successful ====="
+          echo "Service: $SERVICE_NAME"
+          echo "Application: http://127.0.0.1:18000"
           REMOTE
