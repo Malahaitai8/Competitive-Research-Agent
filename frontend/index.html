@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <title>竞研 Agent</title>
+    <meta name="description" content="面向产品经理的竞品研究助手">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" type="image/png" href="/static/jingyan-agent-cat-favicon.png?v=2">
+    <link rel="shortcut icon" href="/static/jingyan-agent-cat-favicon.ico?v=2">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap" rel="stylesheet">
+    <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="/site/styles.css" />
+    <style>
+        .avatar {
+            width: 80px;
+            height: 80px;
+            border-radius: 0;
+            object-fit: contain;
+        }
+
+        .agent-name {
+            text-align: center;
+        }
+
+        .agent-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .agent-choices {
+            display: none;
+        }
+
+        .btn-show {
+            display: none;
+        }
+
+        /* Icon button style for inline buttons */
+        .icon-button {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 5px;
+            margin-left: 5px;
+            border-radius: 4px;
+            transition: background-color 0.2s, color 0.2s;
+        }
+
+        .icon-button:hover {
+            background-color: rgba(123, 104, 238, 0.1); /* Placeholder, adjust in styles.css */
+        }
+
+        .icon-button:active {
+        }
+
+        /* Ensure buttons are properly aligned in headings */
+        h2 .icon-button, h2 .expand-button {
+            vertical-align: middle;
+            font-size: 0.8em;
+        }
+        
+        /* New navigation buttons in the top-right corner */
+        .nav-buttons {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            display: flex;
+            gap: 10px;
+            z-index: 100;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Navigation Buttons (moved from top bar) -->
+    <div class="nav-buttons">
+        <div id="websocketPanelOpenBtn" class="top-websocket-button">
+            <i class="fas fa-network-wired"></i> 状态
+        </div>
+        <div id="historyPanelOpenBtn" class="top-history-button">
+            <i class="fas fa-history"></i> 历史
+        </div>
+    </div>
+
+    <!-- WebSocket Status Panel -->
+    <div class="websocket-panel" id="websocketPanel">
+        <div class="websocket-panel-header">
+            <h3><i class="fas fa-plug"></i> 连接状态</h3>
+            <div class="websocket-panel-actions">
+                <button id="websocketPanelToggle" class="websocket-action-btn" title="关闭面板">
+                    <i class="fas fa-chevron-left"></i>
+                </button>
+            </div>
+        </div>
+        <div class="websocket-status">
+            <div class="status-item">
+                <span class="status-label">连接：</span>
+                <span class="status-value" id="connectionStatus">未连接</span>
+                <span class="status-indicator" id="connectionIndicator"></span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">研究：</span>
+                <span class="status-value" id="researchStatus">未开始</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">已连接：</span>
+                <span class="status-value" id="connectionDuration">-</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">最近活动：</span>
+                <span class="status-value" id="lastActivity">-</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">连接状态码：</span>
+                <span class="status-value" id="readyState">-</span>
+            </div>
+            <div class="status-divider"></div>
+            <div class="status-item">
+                <span class="status-label">连接尝试：</span>
+                <span class="status-value" id="connectionAttempts">0</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">收到消息：</span>
+                <span class="status-value" id="messagesReceived">0</span>
+            </div>
+            <div class="status-divider"></div>
+            <div class="status-item">
+                <span class="status-label">当前任务：</span>
+                <span class="status-value" id="currentTask">-</span>
+            </div>
+        </div>
+    </div>
+
+    <section class="landing">
+        <div class="max-w-5xl mx-auto text-center">
+            <h1 class="text-4xl font-extrabold mx-auto lg:text-7xl">
+                竞研 <br>
+                <span
+                    style="background-image:linear-gradient(to right, #9867F0, #ED4E50); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Agent</span>
+            </h1>
+            <p class="max-w-6xl mx-auto text-gray-600 mt-8" style="font-size:20px">
+                面向产品经理的竞品研究助手。输入研究主题和竞品清单，自动完成搜索、信息整理、对比分析和带引用的中文报告。
+            </p>
+            <a href="#form" class="btn btn-primary">开始研究</a>
+        </div>
+    </section>
+
+    <div class="workbench-brand" aria-label="竞研 Agent">
+        <img src="/static/jingyan-agent-cat.png" class="workbench-brand-avatar" alt="竞研 Agent 头像">
+        <div class="workbench-brand-copy">
+            <strong>竞研 Agent</strong>
+            <span>生成带引用的中文竞品研究报告</span>
+        </div>
+    </div>
+
+    <main class="app-workbench" id="form">
+        <section class="research-config-panel">
+        <form method="POST" class="mt-3" id="researchForm">
+            <div class="form-group">
+                <label for="task" class="agent-question">竞品研究任务</label>
+                <textarea id="task" name="task" class="form-control highlight-connection" placeholder="例如：国内 AI 搜索产品竞品研究，重点关注产品定位、核心功能和会员价格" required autocomplete="on"></textarea>
+                <input type="radio" name="agent" id="autoAgent" value="Auto Agent" checked hidden>
+            </div>
+            <div class="form-group competitive-research-panel">
+                <input type="checkbox" id="competitiveMode" checked hidden>
+                <div class="row">
+                    <div class="col-md-6">
+                        <label for="researchTopic" class="form-label">研究主题</label>
+                        <input type="text" class="form-control highlight-connection" id="researchTopic" placeholder="国内 AI 搜索产品">
+                    </div>
+                    <div class="col-md-6">
+                        <label for="competitors" class="form-label">竞品名称（逗号分隔）</label>
+                        <input type="text" class="form-control highlight-connection" id="competitors" placeholder="Kimi, 秘塔 AI 搜索, 夸克">
+                    </div>
+                </div>
+                <div class="row mt-3">
+                    <div class="col-md-6">
+                        <label for="region" class="form-label">研究地区</label>
+                        <select id="region" class="form-control highlight-connection">
+                            <option value="中国">中国</option>
+                            <option value="全球">全球</option>
+                            <option value="美国">美国</option>
+                            <option value="自定义">自定义</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label for="timeRange" class="form-label">时间范围</label>
+                        <select id="timeRange" class="form-control highlight-connection">
+                            <option value="最近 6 个月">最近 6 个月</option>
+                            <option value="最近 3 个月">最近 3 个月</option>
+                            <option value="最近 12 个月">最近 12 个月</option>
+                            <option value="当前公开信息">当前公开信息</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="mt-3">
+                    <label class="form-label">研究维度</label>
+                    <div class="competitive-dimension-grid">
+                        <label class="dimension-option"><input type="checkbox" name="competitive_dimension" value="产品定位" checked><span>产品定位</span></label>
+                        <label class="dimension-option"><input type="checkbox" name="competitive_dimension" value="目标用户" checked><span>目标用户</span></label>
+                        <label class="dimension-option"><input type="checkbox" name="competitive_dimension" value="核心功能" checked><span>核心功能</span></label>
+                        <label class="dimension-option"><input type="checkbox" name="competitive_dimension" value="会员价格" checked><span>会员价格</span></label>
+                        <label class="dimension-option"><input type="checkbox" name="competitive_dimension" value="商业化方式" checked><span>商业化方式</span></label>
+                        <label class="dimension-option"><input type="checkbox" name="competitive_dimension" value="近期更新" checked><span>近期更新</span></label>
+                    </div>
+                </div>
+                <div class="mt-3">
+                    <label for="extraRequirements" class="form-label">补充要求（可选）</label>
+                    <textarea id="extraRequirements" class="form-control highlight-connection" rows="2" placeholder="例如：重点关注移动端体验、插件生态、免费版限制"></textarea>
+                </div>
+            </div>
+            <div class="form-group">
+                <div class="row">
+
+
+                </div>
+                <button type="button" id="btnShowAuto" class="btn btn-secondary mt-3 btn-show">自动 Agent</button>
+            </div>
+            <div class="form-group">
+                <label for="report_source" class="agent-question">研究来源</label>
+                <p class="form-help">选择本次竞品调研使用的资料入口。本地文档模式需要配置 DOC_PATH 环境变量。</p>
+                <select name="report_source" id="report_source" class="form-control highlight-connection" required>
+                    <option value="web">网页</option>
+                    <option value="local">本地文档</option>
+                    <option value="hybrid">网页 + 本地文档</option>
+                    <option value="azure">Azure 存储</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="maxSearchResults" class="agent-question">每个搜索问题最多抓取多少个网页？</label>
+                <input type="number" class="form-control highlight-connection" id="maxSearchResults" name="max_search_results" min="1" max="20" value="5">
+                <small class="text-muted">控制每个搜索问题抓取的网站数量，默认 5 个。</small>
+            </div>
+            <div class="form-group">
+                <label for="queryDomains" class="form-label">限定搜索域名（可选）</label>
+                <input type="text" class="form-control highlight-connection" id="queryDomains" name="query_domains" placeholder="多个域名用英文逗号分隔" autocomplete="on">
+                <small class="text-muted">示例：techcrunch.com, forbes.com</small>
+            </div>
+        </form>
+        <div class="research-submit-bar">
+            <input type="submit" form="researchForm" value="开始研究" class="btn btn-primary button-padding" id="submitButton">
+        </div>
+        </section>
+
+        <section class="workspace-panel">
+            <div class="workspace-tabs" role="tablist" aria-label="研究工作区">
+                <button type="button" class="workspace-tab is-active" data-workspace-tab="report" role="tab" aria-selected="true">研究报告</button>
+                <button type="button" class="workspace-tab" id="workspaceChatTab" data-workspace-tab="chat" role="tab" aria-selected="false" hidden>继续追问</button>
+            </div>
+
+            <section class="workspace-progress is-collapsed" id="workspaceProgress" hidden>
+        <button type="button" id="workspaceProgressToggle" class="workspace-progress-toggle" title="收起研究进度">收起研究进度</button>
+        <div class="margin-div research-output-container">
+            <!-- Move spinner to the left side of the text -->
+            <h2><div id="modernSpinner" class="modern-spinner"></div> 研究进度</h2>
+            <p class="mt-2 text-left" style="font-size: 0.8rem;">
+                实时查看 AI 搜索、抓取和分析过程。</p>
+            <div id="output"></div>
+        </div>
+            </section>
+
+            <div class="workspace-view is-active" data-workspace-view="report">
+        <div class="images_div">
+            <div id="selectedImagesContainer" style="display: none;"></div>
+        </div>
+        <div class="margin-div report-container">
+            <h2>研究报告
+                <button id="copyToClipboardTop" class="icon-button" title="复制" style="display: none;">
+                    <i class="fas fa-copy"></i>
+                </button>
+            </h2>
+            <!-- Add download buttons above the report container -->
+            <div class="report-actions" style="display: none;">
+                <a id="downloadLinkTop" href="#" class="report-action-btn disabled" target="_blank" rel="noopener noreferrer">
+                    <i class="fas fa-file-pdf"></i> PDF
+                </a>
+                <a id="downloadLinkWordTop" href="#" class="report-action-btn disabled" target="_blank" rel="noopener noreferrer">
+                    <i class="fas fa-file-word"></i> Word
+                </a>
+                <a id="downloadLinkMdTop" href="#" class="report-action-btn disabled" target="_blank" rel="noopener noreferrer">
+                    <i class="fas fa-file-lines"></i> Markdown
+                </a>
+            </div>
+            <div id="analysisSummaryContainer"></div>
+            <div id="reportContainer"></div>
+            <div id="reportActions" style="display: none;">
+                <div class="alert alert-info" role="alert" id="status"></div>
+            </div>
+        </div>
+        <div class="sticky-downloads-bar" id="stickyDownloadsBar" style="display: none;"> <!-- Initially hidden -->
+            <div class="download-buttons-container">
+                <a id="copyToClipboard" class="download-option-btn disabled">
+                    <i class="fas fa-copy"></i> 复制（Markdown）
+                </a>
+                <a id="downloadLinkMd" href="#" class="download-option-btn disabled" target="_blank" rel="noopener noreferrer">
+                    <i class="fas fa-file-lines"></i> Markdown
+                </a>
+                <a id="downloadLink" href="#" class="download-option-btn disabled" target="_blank" rel="noopener noreferrer">
+                    <i class="fas fa-file-pdf"></i> PDF
+                </a>
+                <a id="downloadLinkWord" href="#" class="download-option-btn disabled" target="_blank" rel="noopener noreferrer">
+                    <i class="fas fa-file-word"></i> Word
+                </a>
+                <a id="downloadLinkJson" href="#" class="download-option-btn disabled" target="_blank" rel="noopener noreferrer">
+                    <i class="fas fa-file-code"></i> 运行日志（JSON）
+                </a>
+            </div>
+        </div>
+            </div>
+
+            <div class="workspace-view" data-workspace-view="chat">
+        <!-- Chat Container -->
+        <div class="margin-div chat-container" id="chatContainer" style="display: none;">
+            <div id="chatMessages" class="chat-messages"></div>
+            <div class="chat-input-container">
+                <textarea id="chatInput" class="form-control chat-input" placeholder="继续追问这份报告..." rows="1"></textarea>
+                <button id="sendChatBtn" class="btn btn-primary" title="发送" aria-label="发送">
+                    <i class="fas fa-paper-plane"></i>
+                </button>
+            </div>
+        </div>
+            </div>
+        </section>
+
+        <!-- Fixed bottom bar styled like the top credits bar -->
+    </main>
+
+    <!-- Conversation History Panel -->
+    <div class="history-panel" id="historyPanel">
+        <div class="history-panel-header">
+            <h3><i class="fas fa-history"></i> 研究历史</h3>
+            <div class="history-panel-actions">
+                <button id="historyPanelToggle" class="history-action-btn" title="关闭面板">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+        </div>
+        <div class="history-panel-search">
+            <input type="text" id="historySearch" placeholder="搜索研究历史...">
+            <button id="historySearchBtn" class="history-action-btn" title="搜索">
+                <i class="fas fa-search"></i>
+            </button>
+        </div>
+        <div class="history-panel-filters">
+            <select id="historySortOrder">
+                <option value="newest">最新优先</option>
+                <option value="oldest">最早优先</option>
+            </select>
+            <!-- JS will add Import/Export/Debug buttons here -->
+            <button id="historyClearBtn" class="history-action-btn" title="清空全部历史">
+                <i class="fas fa-trash-alt"></i>
+            </button>
+        </div>
+        <div class="history-panel-entries" id="historyEntries">
+            <!-- Entries will be populated dynamically -->
+        </div>
+    </div>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/showdown/1.9.1/showdown.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.6/purify.min.js"
+            integrity="sha512-YlctBG9PGZIhh9keoqI3eZkQM9T8QUbiBi7qNYAO/TUEo8jqWX5pLp5+x1cKRQDRzJ/lyGyJ9WUVNIRduxIIFw=="
+            crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="/site/scripts.js"></script>
+    <script>
+        // Auto-resize textarea as content grows
+        const taskTextarea = document.getElementById('task');
+        if (taskTextarea) {
+            // Set initial height
+            taskTextarea.setAttribute('style', 'height: 38px; overflow-y: hidden;');
+
+            // Function to resize textarea based on content
+            const resizeTextarea = () => {
+                taskTextarea.style.height = 'auto';
+                taskTextarea.style.height = taskTextarea.scrollHeight + 'px';
+            };
+
+            // Add event listeners for input and focus
+            taskTextarea.addEventListener('input', resizeTextarea);
+            taskTextarea.addEventListener('focus', resizeTextarea);
+        }
+
+        // Ensure feature panels are positioned correctly on window resize
+        window.addEventListener('resize', function () {
+            // Adjust the feature panel width based on screen size
+            const viewportWidth = window.innerWidth;
+            const featurePanel = document.querySelector('.feature-panel');
+
+            if (featurePanel) {
+                if (viewportWidth < 1400) {
+                    featurePanel.style.display = 'none';
+                } else {
+                    featurePanel.style.display = 'block';
+                    // Adjust width based on screen size
+                    const panelWidth = Math.min(280, Math.max(200, viewportWidth * 0.15));
+                    featurePanel.style.width = `${panelWidth}px`;
+                }
+            }
+        });
+    </script>
+</body>
+
+</html>

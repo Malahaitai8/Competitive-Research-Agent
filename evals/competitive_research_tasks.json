@@ -1,0 +1,132 @@
+[
+  {
+    "id": "ai_search_cn_001",
+    "eval_tier": "deep",
+    "research_topic": "国内 AI 搜索产品",
+    "competitors": ["Kimi", "秘塔 AI 搜索", "夸克"],
+    "dimensions": ["产品定位", "目标用户", "核心功能", "会员价格", "近期更新"],
+    "region": "中国",
+    "time_range": "最近 6 个月",
+    "extra_requirements": "重点关注免费版限制、移动端体验和搜索结果可信度"
+  },
+  {
+    "id": "ai_office_cn_001",
+    "eval_tier": "deep",
+    "research_topic": "国内 AI 办公产品",
+    "competitors": ["WPS AI", "钉钉 AI", "飞书智能伙伴"],
+    "dimensions": ["产品定位", "目标用户", "核心功能", "会员价格", "商业化方式", "近期更新"],
+    "region": "中国",
+    "time_range": "最近 6 个月",
+    "extra_requirements": "重点关注文档、表格、会议、知识库和企业协作场景"
+  },
+  {
+    "id": "ai_coding_cn_001",
+    "eval_tier": "deep",
+    "research_topic": "国内 AI 编程助手",
+    "competitors": ["通义灵码", "豆包 MarsCode", "腾讯云 AI Code Assistant"],
+    "dimensions": ["产品定位", "目标用户", "核心功能", "会员价格", "商业化方式", "近期更新"],
+    "region": "中国",
+    "time_range": "最近 6 个月",
+    "extra_requirements": "重点比较 IDE 集成、代码补全、代码解释、企业版和国产生态适配"
+  },
+  {
+    "id": "general_ai_assistant_cn_001",
+    "eval_tier": "smoke",
+    "research_topic": "国内通用 AI 助手",
+    "competitors": ["豆包", "Kimi", "文心一言"],
+    "dimensions": ["产品定位", "目标用户", "核心功能", "会员价格", "近期更新"],
+    "region": "中国",
+    "time_range": "最近 6 个月",
+    "extra_requirements": "关注多模态、办公场景和移动端入口"
+  },
+  {
+    "id": "ai_ppt_cn_001",
+    "eval_tier": "smoke",
+    "research_topic": "国内 AI PPT 产品",
+    "competitors": ["WPS AI", "百度文库 AI PPT", "讯飞智文"],
+    "dimensions": ["产品定位", "目标用户", "核心功能", "会员价格", "商业化方式"],
+    "region": "中国",
+    "time_range": "当前公开信息",
+    "extra_requirements": "关注中文模板、办公软件集成和导出能力"
+  },
+  {
+    "id": "ai_video_cn_001",
+    "eval_tier": "smoke",
+    "research_topic": "国内 AI 视频生成产品",
+    "competitors": ["可灵", "即梦", "海螺 AI"],
+    "dimensions": ["产品定位", "目标用户", "核心功能", "会员价格", "近期更新"],
+    "region": "中国",
+    "time_range": "最近 6 个月",
+    "extra_requirements": "关注文生视频、图生视频、创作者工作流和移动端体验"
+  },
+  {
+    "id": "ai_image_cn_001",
+    "eval_tier": "smoke",
+    "research_topic": "国内 AI 图片生成产品",
+    "competitors": ["即梦", "通义万相", "文心一格"],
+    "dimensions": ["产品定位", "目标用户", "核心功能", "会员价格", "商业化方式"],
+    "region": "中国",
+    "time_range": "最近 12 个月",
+    "extra_requirements": "关注中文提示词、商用授权和设计工作流"
+  },
+  {
+    "id": "ai_education_cn_001",
+    "eval_tier": "smoke",
+    "research_topic": "国内 AI 教育产品",
+    "competitors": ["作业帮学习机", "学而思学习机", "小猿学练机"],
+    "dimensions": ["产品定位", "目标用户", "核心功能", "商业化方式", "近期更新"],
+    "region": "中国",
+    "time_range": "最近 12 个月",
+    "extra_requirements": "关注个性化辅导、学习反馈、硬件形态和家长决策因素"
+  },
+  {
+    "id": "ai_coding_global_001",
+    "eval_tier": "smoke",
+    "research_topic": "AI 编程助手",
+    "competitors": ["GitHub Copilot", "Cursor", "Codeium"],
+    "dimensions": ["产品定位", "目标用户", "核心功能", "会员价格", "商业化方式", "近期更新"],
+    "region": "全球",
+    "time_range": "最近 6 个月",
+    "extra_requirements": "重点比较 IDE 集成、团队版能力和官方定价页"
+  },
+  {
+    "id": "ai_meeting_global_001",
+    "eval_tier": "smoke",
+    "research_topic": "AI 会议助手",
+    "competitors": ["Otter.ai", "Fireflies.ai", "Zoom AI Companion"],
+    "dimensions": ["产品定位", "目标用户", "核心功能", "会员价格", "近期更新"],
+    "region": "全球",
+    "time_range": "最近 12 个月",
+    "extra_requirements": "关注转写、总结、企业合规和官方价格信息"
+  },
+  {
+    "id": "ai_image_global_001",
+    "eval_tier": "smoke",
+    "research_topic": "AI 图片生成产品",
+    "competitors": ["Midjourney", "Ideogram", "Adobe Firefly"],
+    "dimensions": ["产品定位", "目标用户", "核心功能", "会员价格", "商业化方式"],
+    "region": "全球",
+    "time_range": "最近 12 个月",
+    "extra_requirements": "关注版权安全、商用授权和官方定价页"
+  },
+  {
+    "id": "ai_notes_global_001",
+    "eval_tier": "smoke",
+    "research_topic": "AI 笔记产品",
+    "competitors": ["Notion AI", "Mem", "Evernote AI"],
+    "dimensions": ["产品定位", "目标用户", "核心功能", "会员价格", "商业化方式"],
+    "region": "全球",
+    "time_range": "当前公开信息",
+    "extra_requirements": "关注知识管理、团队协作和官方定价页"
+  },
+  {
+    "id": "local_life_delivery_cn_001",
+    "eval_tier": "generalization",
+    "research_topic": "国内外卖平台竞品研究",
+    "competitors": ["美团外卖", "淘宝闪购", "京东外卖"],
+    "dimensions": ["产品定位", "目标用户", "核心功能", "会员体系", "商业化方式", "近期更新"],
+    "region": "中国",
+    "time_range": "最近 6 个月",
+    "extra_requirements": "作为非 AI 行业泛化测试，重点关注主体关系、来源质量和时间范围"
+  }
+]

@@ -1,0 +1,94 @@
+{
+  "profiles": [
+    {
+      "name": "美团",
+      "aliases": ["美团", "美团外卖", "美团闪购", "大众点评"],
+      "domains": ["meituan.com", "dianping.com"],
+      "query_terms": ["美团 官网", "美团 财报", "美团 公告", "美团 帮助中心"]
+    },
+    {
+      "name": "阿里巴巴",
+      "aliases": ["阿里", "阿里巴巴", "淘宝", "淘宝闪购", "饿了么", "飞猪", "盒马"],
+      "domains": ["alibabagroup.com", "taobao.com", "tmall.com", "ele.me", "alibaba.com"],
+      "query_terms": ["Alibaba Businesses", "阿里巴巴 业务介绍", "淘宝闪购 官方", "饿了么 官方"]
+    },
+    {
+      "name": "京东",
+      "aliases": ["京东", "京东外卖", "京东秒送", "达达", "京东到家"],
+      "domains": ["jd.com", "jd.hk", "jdl.com", "imdada.cn"],
+      "query_terms": ["京东 官网", "京东 财报", "京东秒送 官方", "京东外卖 官方"]
+    },
+    {
+      "name": "OpenAI",
+      "aliases": ["OpenAI", "ChatGPT", "GPT", "OpenAI API"],
+      "domains": ["openai.com"],
+      "query_terms": ["OpenAI official", "OpenAI pricing", "OpenAI help center"]
+    },
+    {
+      "name": "DeepSeek",
+      "aliases": ["DeepSeek", "深度求索", "deepseek"],
+      "domains": ["deepseek.com"],
+      "query_terms": ["DeepSeek official", "DeepSeek API pricing", "DeepSeek docs"]
+    },
+    {
+      "name": "Anthropic",
+      "aliases": ["Anthropic", "Claude"],
+      "domains": ["anthropic.com"],
+      "query_terms": ["Anthropic official", "Claude pricing", "Claude docs"]
+    },
+    {
+      "name": "Google",
+      "aliases": ["Google", "Gemini", "Gemini Advanced"],
+      "domains": ["google.com", "gemini.google.com", "deepmind.google"],
+      "query_terms": ["Google Gemini official", "Gemini pricing", "Gemini help center"]
+    },
+    {
+      "name": "Perplexity",
+      "aliases": ["Perplexity", "Perplexity AI", "perplexity"],
+      "domains": ["perplexity.ai"],
+      "query_terms": ["Perplexity official", "Perplexity Pro pricing", "Perplexity help center"]
+    },
+    {
+      "name": "秘塔AI",
+      "aliases": ["秘塔AI", "秘塔", "秘塔搜索", "Metaso"],
+      "domains": ["metaso.cn"],
+      "query_terms": ["秘塔AI 官网", "秘塔AI 会员价格", "秘塔AI 帮助中心"]
+    },
+    {
+      "name": "夸克AI",
+      "aliases": ["夸克AI", "夸克", "Quark"],
+      "domains": ["quark.cn", "myquark.cn", "alibaba.com", "alibabagroup.com"],
+      "query_terms": ["夸克AI 官方", "夸克AI 会员价格", "夸克AI 产品更新"]
+    },
+    {
+      "name": "字节跳动",
+      "aliases": ["字节", "字节跳动", "抖音", "火山引擎", "豆包"],
+      "domains": ["bytedance.com", "douyin.com", "volcengine.com", "doubao.com"],
+      "query_terms": ["字节跳动 官网", "抖音 官方", "火山引擎 文档", "豆包 官方"]
+    },
+    {
+      "name": "腾讯",
+      "aliases": ["腾讯", "微信", "腾讯云", "元宝"],
+      "domains": ["tencent.com", "qq.com", "weixin.qq.com", "cloud.tencent.com"],
+      "query_terms": ["腾讯 官网", "腾讯 财报", "腾讯云 文档", "腾讯元宝 官方"]
+    },
+    {
+      "name": "百度",
+      "aliases": ["百度", "文心一言", "ERNIE", "百度智能云"],
+      "domains": ["baidu.com", "baidu-intl.com", "cloud.baidu.com"],
+      "query_terms": ["百度 官网", "百度 财报", "文心一言 官方", "百度智能云 文档"]
+    },
+    {
+      "name": "携程",
+      "aliases": ["携程", "Trip.com", "去哪儿", "同程"],
+      "domains": ["ctrip.com", "trip.com", "qunar.com", "ly.com"],
+      "query_terms": ["携程 官网", "Trip.com investor relations", "去哪儿 官方", "同程 官方"]
+    },
+    {
+      "name": "滴滴",
+      "aliases": ["滴滴", "滴滴出行", "高德", "哈啰"],
+      "domains": ["didiglobal.com", "didichuxing.com", "amap.com", "hello-inc.com"],
+      "query_terms": ["滴滴 官网", "滴滴 财报", "高德 官方", "哈啰 官方"]
+    }
+  ]
+}
