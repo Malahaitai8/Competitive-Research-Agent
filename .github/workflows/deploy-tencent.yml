@@ -1,0 +1,90 @@
+name: Deploy to Tencent Cloud
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: competitive-agent-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SERVER_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Upload latest code
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+        run: |
+          rsync -az --delete \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='.env' \
+            --exclude='.venv/' \
+            --exclude='data/' \
+            --exclude='outputs/' \
+            --exclude='logs/' \
+            --exclude='my-docs/' \
+            --exclude='__pycache__/' \
+            --exclude='*.pyc' \
+            -e "ssh -o BatchMode=yes -o ServerAliveInterval=30" \
+            ./ \
+            "$SERVER_USER@$SERVER_HOST:/opt/competitive-research-agent/"
+
+      - name: Install dependencies and restart
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+        run: |
+          ssh \
+            -o BatchMode=yes \
+            -o ServerAliveInterval=30 \
+            "$SERVER_USER@$SERVER_HOST" <<'REMOTE'
+          set -euo pipefail
+
+          cd /opt/competitive-research-agent
+
+          /opt/competitive-research-agent/.venv/bin/python \
+            -m pip install \
+            -r requirements.txt \
+            -i https://pypi.tuna.tsinghua.edu.cn/simple \
+            --prefer-binary \
+            --timeout 120 \
+            --retries 5
+
+          sudo /usr/bin/systemctl restart competitive-research-agent
+
+          sleep 8
+
+          sudo /usr/bin/systemctl is-active competitive-research-agent
+
+          curl -fsS \
+            http://127.0.0.1:18000/ \
+            >/dev/null
+
+          echo "Deployment successful"
+          REMOTE
