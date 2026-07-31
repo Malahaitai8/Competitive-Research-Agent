@@ -1,7 +1,11 @@
 import asyncio
+import json
+
+import pytest
 
 from backend.server import semantic_remediation as semantic_remediation_module
 from backend.server.semantic_remediation import (
+    _llm_call_for,
     apply_risk_annotations,
     build_semantic_repair_calls,
     decide_remediation_outcome,
@@ -93,6 +97,139 @@ def test_semantic_remediation_strategy_config_maps_experiment_modes():
     assert get_semantic_remediation_config("2-cycle") == {"mode": "2-cycle", "max_cycles": 2}
     assert get_semantic_remediation_config("pre-only") == {"mode": "pre-only", "max_cycles": 0}
     assert get_semantic_remediation_config("post-only") == {"mode": "post-only", "max_cycles": 1}
+
+
+def test_many_semantic_gaps_still_run_bounded_automatic_repair():
+    validation = {"semantic_gaps": [{"id": f"gap_{index}"} for index in range(29)]}
+
+    assert semantic_remediation_module.should_run_automatic_semantic_repair(validation, cycle_budget=1) is True
+    assert semantic_remediation_module.should_run_automatic_semantic_repair(
+        {"semantic_gaps": [{"id": "gap_1"}, {"id": "gap_2"}, {"id": "gap_3"}]},
+        cycle_budget=1,
+    ) is True
+    assert semantic_remediation_module.should_run_automatic_semantic_repair(
+        {"semantic_gaps": [{"id": "gap_1"}]},
+        cycle_budget=0,
+    ) is False
+
+
+def test_semantic_validator_uses_fast_llm_with_bounded_output(monkeypatch):
+    captured = {}
+
+    class FakeCfg:
+        fast_llm_model = "fast-model"
+        fast_llm_provider = "fast-provider"
+        fast_token_limit = 8000
+        strategic_llm_model = "slow-model"
+        strategic_llm_provider = "slow-provider"
+        strategic_token_limit = 12000
+        llm_kwargs = {}
+
+    class FakeResearcher:
+        cfg = FakeCfg()
+        kwargs = {}
+
+        def add_costs(self, *_args, **_kwargs):
+            return None
+
+    async def fake_create_chat_completion(**kwargs):
+        captured.update(kwargs)
+        return "{}"
+
+    monkeypatch.setattr(
+        semantic_remediation_module,
+        "create_chat_completion",
+        fake_create_chat_completion,
+    )
+
+    asyncio.run(_llm_call_for(FakeResearcher())("validate"))
+
+    assert captured["model"] == "fast-model"
+    assert captured["llm_provider"] == "fast-provider"
+    assert captured["max_tokens"] <= 3000
+
+
+def test_semantic_rewrite_applies_local_patches_without_replacing_report(monkeypatch):
+    captured = {}
+
+    class FakeCfg:
+        strategic_llm_model = "quality-model"
+        strategic_llm_provider = "quality-provider"
+        strategic_token_limit = 12000
+        llm_kwargs = {}
+
+    class FakeResearcher:
+        cfg = FakeCfg()
+        kwargs = {}
+
+        def add_costs(self, *_args, **_kwargs):
+            return None
+
+    async def fake_create_chat_completion(**kwargs):
+        captured.update(kwargs)
+        return json.dumps(
+            {
+                "patches": [
+                    {
+                        "original": "会员价格为 20 元。",
+                        "replacement": "会员价格暂未找到可靠官方公开资料，建议复核官方定价页。",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(
+        semantic_remediation_module,
+        "create_chat_completion",
+        fake_create_chat_completion,
+    )
+
+    original = "# 定价\n会员价格为 20 元。\n\n# 核心功能\n保留这段不变。"
+    rewritten = asyncio.run(
+        semantic_remediation_module._rewrite_report_with_actions(
+            FakeResearcher(),
+            original,
+            [{"action": "rewrite_only", "claim": "会员价格为 20 元。"}],
+            "未找到官方定价证据",
+        )
+    )
+
+    assert "会员价格暂未找到可靠官方公开资料" in rewritten
+    assert "# 核心功能\n保留这段不变。" in rewritten
+    assert "会员价格为 20 元。" not in rewritten
+    assert captured["max_tokens"] <= 2500
+    assert "Return only JSON" in captured["messages"][0]["content"]
+    assert "Return the complete Markdown report" not in captured["messages"][0]["content"]
+
+
+def test_semantic_validator_times_out_instead_of_blocking_report(monkeypatch):
+    class FakeCfg:
+        fast_llm_model = "fast-model"
+        fast_llm_provider = "fast-provider"
+        fast_token_limit = 3000
+        llm_kwargs = {}
+
+    class FakeResearcher:
+        cfg = FakeCfg()
+        kwargs = {}
+
+        def add_costs(self, *_args, **_kwargs):
+            return None
+
+    async def slow_create_chat_completion(**_kwargs):
+        await asyncio.sleep(0.05)
+        return "{}"
+
+    monkeypatch.setenv("SEMANTIC_VALIDATION_TIMEOUT_SECONDS", "0.01")
+    monkeypatch.setattr(
+        semantic_remediation_module,
+        "create_chat_completion",
+        slow_create_chat_completion,
+    )
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(_llm_call_for(FakeResearcher())("validate"))
 
 
 def test_prepare_rewrite_actions_downgrades_failed_search_to_risk_only():

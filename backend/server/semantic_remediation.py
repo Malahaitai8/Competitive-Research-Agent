@@ -1,6 +1,9 @@
+import asyncio
 import os
 import re
 from typing import Any
+
+import json_repair
 
 from gpt_researcher.actions.utils import stream_output
 from gpt_researcher.competitive_sources import official_terms_for_competitor
@@ -41,6 +44,15 @@ def get_semantic_remediation_config(mode: str | None = None, max_cycles: int | N
         normalized = "1-cycle"
     cycle_count = defaults[normalized] if max_cycles is None else max(0, int(max_cycles))
     return {"mode": normalized, "max_cycles": cycle_count}
+
+
+def should_run_automatic_semantic_repair(
+    validation: dict[str, Any],
+    cycle_budget: int,
+) -> bool:
+    """Keep bounded repair enabled whenever the validator finds a gap."""
+    gap_count = len(validation.get("semantic_gaps") or [])
+    return cycle_budget > 0 and gap_count > 0
 
 
 def build_semantic_repair_calls(task: str, actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -171,14 +183,51 @@ def apply_risk_annotations(report: str, validation: dict[str, Any]) -> str:
     return report
 
 
+def _rewrite_excerpts(report: str, actions: list[dict[str, Any]]) -> str:
+    excerpts: list[str] = []
+    seen = set()
+    for action in actions:
+        claim = str(action.get("claim") or "").strip()
+        location = action.get("location") or {}
+        section = str(location.get("section") or "").strip()
+        needle = claim if claim and claim in report else section
+        if not needle or needle not in report:
+            continue
+        start = max(report.find(needle) - 320, 0)
+        end = min(report.find(needle) + len(needle) + 320, len(report))
+        excerpt = report[start:end].strip()
+        if excerpt and excerpt not in seen:
+            seen.add(excerpt)
+            excerpts.append(excerpt)
+    return "\n\n---\n\n".join(excerpts)[:6000]
+
+
+def _apply_rewrite_patches(report: str, payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return report
+    updated = report
+    for patch in payload.get("patches") or []:
+        if not isinstance(patch, dict):
+            continue
+        original = str(patch.get("original") or "").strip()
+        replacement = str(patch.get("replacement") or "").strip()
+        if not original or not replacement or original == replacement:
+            continue
+        if original in updated:
+            updated = updated.replace(original, replacement, 1)
+    return updated
+
+
 async def _rewrite_report_with_actions(researcher, report: str, actions: list[dict[str, Any]], extra_context: str) -> str:
     if not actions:
         return report
+    excerpts = _rewrite_excerpts(report, actions)
     prompt = f"""You are an editor for a Chinese competitive research report.
-Only use the provided evidence and remediation actions. Locally rewrite affected sections or matrix cells.
+Only use the provided evidence and remediation actions. Return small exact-text patches for affected sentences or matrix cells.
 Do not add unsupported conclusions. If evidence remains insufficient, explicitly mark it as pending human confirmation.
 For weakly supported claims, make the wording more cautious instead of making the conclusion stronger.
 For risk_only actions, do not invent replacement facts; only add a concise risk note where the claim appears.
+Do not rewrite the complete report.
 
 Remediation actions:
 {actions}
@@ -186,22 +235,27 @@ Remediation actions:
 Evidence:
 {extra_context[:8000]}
 
-Original report:
-{report[:16000]}
+Affected report excerpts:
+{excerpts}
 
-Return the complete Markdown report in Chinese."""
+Return only JSON in this shape:
+{{"patches":[{{"original":"exact text copied from the excerpt","replacement":"revised Chinese text"}}]}}
+The original text must match the excerpt exactly."""
     try:
-        rewritten = await create_chat_completion(
-            model=researcher.cfg.strategic_llm_model,
-            messages=[{"role": "user", "content": prompt}],
-            llm_provider=researcher.cfg.strategic_llm_provider,
-            max_tokens=researcher.cfg.strategic_token_limit,
-            llm_kwargs=researcher.cfg.llm_kwargs,
-            reasoning_effort=ReasoningEfforts.Low.value,
-            cost_callback=researcher.add_costs,
-            **researcher.kwargs,
+        rewritten = await asyncio.wait_for(
+            create_chat_completion(
+                model=researcher.cfg.strategic_llm_model,
+                messages=[{"role": "user", "content": prompt}],
+                llm_provider=researcher.cfg.strategic_llm_provider,
+                max_tokens=min(int(researcher.cfg.strategic_token_limit), 2500),
+                llm_kwargs=researcher.cfg.llm_kwargs,
+                reasoning_effort=ReasoningEfforts.Low.value,
+                cost_callback=researcher.add_costs,
+                **researcher.kwargs,
+            ),
+            timeout=90,
         )
-        return rewritten or report
+        return _apply_rewrite_patches(report, json_repair.loads(rewritten))
     except Exception:
         return report
 
@@ -246,7 +300,11 @@ async def run_competitive_semantic_remediation(
     )
 
     initial_actions = plan_remediation_actions(validation)
-    if cycle_budget <= 0 or not initial_actions:
+    automatic_repair_enabled = should_run_automatic_semantic_repair(
+        validation,
+        cycle_budget,
+    )
+    if not automatic_repair_enabled or not initial_actions:
         final_report = apply_risk_annotations(report, validation)
         remediation = {
             "mode": config["mode"],
@@ -257,6 +315,7 @@ async def run_competitive_semantic_remediation(
             "executed_calls": [],
             "repaired_source_count": 0,
             "rewritten": final_report != report,
+            "skip_reason": "no_automatic_repair_needed",
         }
         metadata = {
             "semantic_validation": validation,
@@ -399,14 +458,23 @@ async def run_competitive_semantic_remediation(
 
 def _llm_call_for(researcher):
     async def call(prompt: str) -> str:
-        return await create_chat_completion(
-            model=researcher.cfg.strategic_llm_model,
-            messages=[{"role": "user", "content": prompt}],
-            llm_provider=researcher.cfg.strategic_llm_provider,
-            max_tokens=min(int(researcher.cfg.strategic_token_limit), 6000),
-            llm_kwargs=researcher.cfg.llm_kwargs,
-            reasoning_effort=ReasoningEfforts.Low.value,
-            cost_callback=researcher.add_costs,
-            **researcher.kwargs,
+        try:
+            timeout_seconds = float(
+                os.getenv("SEMANTIC_VALIDATION_TIMEOUT_SECONDS", "90")
+            )
+        except ValueError:
+            timeout_seconds = 90.0
+        return await asyncio.wait_for(
+            create_chat_completion(
+                model=researcher.cfg.fast_llm_model,
+                messages=[{"role": "user", "content": prompt}],
+                llm_provider=researcher.cfg.fast_llm_provider,
+                max_tokens=min(int(researcher.cfg.fast_token_limit), 3000),
+                llm_kwargs=researcher.cfg.llm_kwargs,
+                reasoning_effort=ReasoningEfforts.Low.value,
+                cost_callback=researcher.add_costs,
+                **researcher.kwargs,
+            ),
+            timeout=max(timeout_seconds, 0.01),
         )
     return call

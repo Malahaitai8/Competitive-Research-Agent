@@ -18,6 +18,14 @@ from ..utils.enum import ReportSource, ReportType
 from ..utils.logging_config import get_json_handler
 
 
+COMPETITIVE_RESEARCH_MARKER = "[COMPETITIVE_RESEARCH_MODE]"
+
+
+def _should_append_original_query(query: str) -> bool:
+    """Keep structured competitive task payloads out of the search engine."""
+    return COMPETITIVE_RESEARCH_MARKER not in (query or "")
+
+
 class ResearchConductor:
     """Manages and coordinates the research process.
 
@@ -269,7 +277,10 @@ class ResearchConductor:
         # Generate Sub-Queries including original query
         sub_queries = await self.plan_research(query)
         # If this is not part of a sub researcher, add original query to research for better results
-        if self.researcher.report_type != "subtopic_report":
+        if (
+            self.researcher.report_type != "subtopic_report"
+            and _should_append_original_query(query)
+        ):
             sub_queries.append(query)
 
         if self.researcher.verbose:
@@ -362,7 +373,10 @@ class ResearchConductor:
         self.logger.info(f"Generated sub-queries: {sub_queries}")
         
         # If this is not part of a sub researcher, add original query to research for better results
-        if self.researcher.report_type != "subtopic_report":
+        if (
+            self.researcher.report_type != "subtopic_report"
+            and _should_append_original_query(query)
+        ):
             sub_queries.append(query)
 
         if self.researcher.verbose:
@@ -379,7 +393,11 @@ class ResearchConductor:
         try:
             context = await asyncio.gather(
                 *[
-                    self._process_sub_query(sub_query, scraped_data, query_domains)
+                    self._process_sub_query_with_timeout(
+                        sub_query,
+                        scraped_data,
+                        query_domains,
+                    )
                     for sub_query in sub_queries
                 ]
             )
@@ -394,6 +412,42 @@ class ResearchConductor:
         except Exception as e:
             self.logger.error(f"Error during web search: {e}", exc_info=True)
             return []
+
+    async def _process_sub_query_with_timeout(
+        self,
+        sub_query: str,
+        scraped_data: list,
+        query_domains: list,
+        timeout_seconds: float | None = None,
+    ):
+        """Prevent one stalled search or scraper from blocking the whole report."""
+        if timeout_seconds is None:
+            try:
+                timeout_seconds = float(
+                    os.getenv("RESEARCH_SUBQUERY_TIMEOUT_SECONDS", "75")
+                )
+            except ValueError:
+                timeout_seconds = 75.0
+        try:
+            return await asyncio.wait_for(
+                self._process_sub_query(sub_query, scraped_data, query_domains),
+                timeout=max(timeout_seconds, 0.01),
+            )
+        except TimeoutError:
+            logger = getattr(self, "logger", logging.getLogger("research"))
+            logger.warning(
+                "Sub-query timed out after %.1fs: %s",
+                timeout_seconds,
+                sub_query,
+            )
+            if self.researcher.verbose:
+                await stream_output(
+                    "logs",
+                    "subquery_timeout",
+                    f"检索超时，已跳过该子问题：{sub_query}",
+                    self.researcher.websocket,
+                )
+            return ""
 
     def _get_mcp_strategy(self) -> str:
         """

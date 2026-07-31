@@ -15,6 +15,7 @@ from gpt_researcher.utils.enum import ReportType, Tone
 from gpt_researcher.actions import stream_output  # Import stream_output
 from .multi_agent_runner import run_multi_agent_task
 from .server_utils import CustomLogsHandler
+from .research_task_registry import ResearchTaskRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ class WebSocketManager:
         self.active_connections: List[WebSocket] = []
         self.sender_tasks: Dict[WebSocket, asyncio.Task] = {}
         self.message_queues: Dict[WebSocket, asyncio.Queue] = {}
+        self.research_tasks = ResearchTaskRegistry()
 
     async def start_sender(self, websocket: WebSocket):
         """Start the sender task."""

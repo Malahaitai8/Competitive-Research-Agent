@@ -196,6 +196,7 @@ async def handle_start_command(websocket, data: str, manager):
     # Add JSON log path to file_paths
     file_paths["json"] = os.path.relpath(logs_handler.log_file)
     await send_file_paths(websocket, file_paths)
+    return file_paths
 
 
 async def handle_human_feedback(data: str):
@@ -387,6 +388,23 @@ async def handle_websocket_communication(websocket, manager):
                 
                 if data == "ping":
                     await websocket.send_text("pong")
+                elif data.strip().startswith("subscribe"):
+                    try:
+                        subscription = json.loads(data.strip()[len("subscribe"):].strip())
+                        task_id = str(subscription.get("task_id") or "").strip()
+                    except (json.JSONDecodeError, AttributeError):
+                        task_id = ""
+                    if not task_id:
+                        await websocket.send_json(make_progress_event(
+                            "error",
+                            "缺少需要恢复的任务 ID",
+                            raw_message="Missing task_id for subscription",
+                            stage="task_control",
+                            status="failed",
+                            severity="error",
+                        ))
+                    else:
+                        await manager.research_tasks.subscribe(task_id, websocket)
                 elif running_task and not running_task.done():
                     # discard any new request if a task is already running
                     logger.warning(
@@ -405,8 +423,26 @@ async def handle_websocket_communication(websocket, manager):
                 # Normalize command detection by checking startswith after stripping whitespace
                 elif data.strip().startswith("start"):
                     logger.info(f"Processing start command")
-                    running_task = run_long_running_task(
-                        handle_start_command(websocket, data, manager)
+                    try:
+                        request_data = json.loads(data.strip()[len("start"):].strip())
+                    except json.JSONDecodeError:
+                        await websocket.send_json(make_progress_event(
+                            "error",
+                            "任务参数格式无效，请重新发起调研",
+                            raw_message="Invalid start command JSON",
+                            stage="task_control",
+                            status="failed",
+                            severity="error",
+                        ))
+                        continue
+
+                    async def run_registered_research(event_sink):
+                        return await handle_start_command(event_sink, data, manager)
+
+                    await manager.research_tasks.create_task(
+                        request_data,
+                        run_registered_research,
+                        websocket,
                     )
                 elif data.strip().startswith("human_feedback"):
                     logger.info(f"Processing human_feedback command")
@@ -431,6 +467,7 @@ async def handle_websocket_communication(websocket, manager):
                 print(f"WebSocket error: {e}")
                 break
     finally:
+        manager.research_tasks.unsubscribe(websocket)
         if running_task and not running_task.done():
             running_task.cancel()
 

@@ -9,6 +9,19 @@ const GPTResearcher = (() => {
   let isFirstReport = true; // Flag to track if this is the first report
   let chatContainer = null; // Global reference to chat container
   let lastRequestData = null; // Store the last request data for reconnection
+  let currentWorkbenchView = 'welcome';
+  let activeHistoryIndex = null;
+  let activeResearchTask = null;
+  let workbenchInitialized = false;
+  let chatInitialized = false;
+  let restoringTaskChatHistory = false;
+  let resultConversationWidth = null;
+  let resultChatRequestActive = false;
+  let reconnectTimer = null;
+  const HISTORY_SEARCH_THRESHOLD = 8;
+  const RESULT_LAYOUT_STORAGE_KEY = 'researchResultLayout:v1';
+  const RESULT_CHAT_STORAGE_KEY = 'researchChatHistory:v1';
+  const ACTIVE_RESEARCH_STORAGE_KEY = 'activeResearchTask:v1';
 
   // Add WebSocket monitoring variables
   let socket = null;
@@ -23,6 +36,9 @@ const GPTResearcher = (() => {
   let reconnectInterval = 2000; // Start with 2 seconds
 
   const init = () => {
+    restoreStoredActiveResearch();
+    initWorkbench();
+
     // Check if cookies are enabled
     checkCookiesEnabled();
 
@@ -64,7 +80,14 @@ const GPTResearcher = (() => {
     // The download bar is now fixed in place with CSS
     // No need to set display property here
 
-    updateState('initial');
+    if (activeResearchTask?.id && activeResearchTask.status === 'running') {
+      isResearchActive = true;
+      setWorkbenchView('running', { preserveUrl: true });
+      updateResearchStage(activeResearchTask.stage || 'plan');
+      dispose_socket = listenToSockEvents();
+    } else {
+      updateState('initial');
+    }
 
     // Initialize research icon to not spinning
     updateResearchIcon(false);
@@ -532,6 +555,89 @@ const GPTResearcher = (() => {
     }
   }
 
+  const resolveHistoryReportContent = async (entry) => {
+    if (!entry) return '';
+
+    const storedContent = entry.content || entry.answer || '';
+    if (storedContent) return storedContent;
+
+    if (entry.id) {
+      try {
+        const response = await fetch(`/api/reports/${encodeURIComponent(entry.id)}`);
+        if (response.ok) {
+          const payload = await response.json();
+          const report = payload.report || {};
+          const serverContent = report.answer || report.content || '';
+          if (serverContent) {
+            entry.content = serverContent;
+            entry.answer = serverContent;
+            entry.competitiveAnalysis = entry.competitiveAnalysis || report.metadata?.competitiveAnalysis || null;
+            entry.competitiveResearch = entry.competitiveResearch || report.metadata?.competitiveResearch || null;
+            entry.intermediateResults = entry.intermediateResults || report.metadata?.intermediateResults || null;
+            entry.competitiveMatrix = entry.competitiveMatrix || report.metadata?.competitiveMatrix || null;
+            entry.qualityStats = entry.qualityStats || report.metadata?.qualityStats || null;
+            entry.links = Object.keys(entry.links || {}).length > 0 ? entry.links : (report.links || {});
+            return serverContent;
+          }
+        }
+      } catch (error) {
+        console.warn('Unable to fetch server report body:', error);
+      }
+    }
+
+    if (entry.links?.md) {
+      try {
+        const response = await fetch(entry.links.md);
+        if (response.ok) {
+          const markdownContent = await response.text();
+          if (markdownContent && markdownContent.trim()) {
+            entry.content = markdownContent;
+            entry.answer = markdownContent;
+            return markdownContent;
+          }
+        }
+      } catch (error) {
+        console.warn('Unable to fetch markdown report from history link:', error);
+      }
+    }
+
+    return '';
+  }
+
+  const resolveHistoryCompetitiveAnalysis = async (entry) => {
+    if (!entry) return null;
+    if (entry.competitiveAnalysis && typeof entry.competitiveAnalysis === 'object') {
+      return entry.competitiveAnalysis;
+    }
+
+    const analysisPath = entry.links?.competitive_analysis;
+    if (!analysisPath) return null;
+
+    try {
+      const normalizedPath = String(analysisPath).replace(/\\/g, '/');
+      const requestPath = normalizedPath.startsWith('/')
+        ? normalizedPath
+        : `/${normalizedPath}`;
+      const analysisUrl = new URL(requestPath, window.location.origin);
+      if (analysisUrl.origin !== window.location.origin) return null;
+
+      const response = await fetch(analysisUrl.toString());
+      if (!response.ok) return null;
+
+      const payload = await response.json();
+      const analysis = payload?.competitive_analysis || payload?.analysis || payload;
+      if (!analysis || typeof analysis !== 'object' || Array.isArray(analysis)) {
+        return null;
+      }
+
+      entry.competitiveAnalysis = analysis;
+      return analysis;
+    } catch (error) {
+      console.warn('Unable to restore competitive source classification:', error);
+      return null;
+    }
+  }
+
   // Save conversation history to cookie
   const saveConversationHistory = () => {
     try {
@@ -573,9 +679,12 @@ const GPTResearcher = (() => {
   // Delete a history entry
   const deleteHistoryEntry = (index) => {
     if (confirm('确定要删除这条研究记录吗？')) {
+      const taskId = getHistoryEntryId(conversationHistory[index], index);
       conversationHistory.splice(index, 1);
+      removeTaskChatHistory(taskId);
       saveConversationHistory();
       renderHistoryEntries();
+      renderWorkbenchHistory();
       showToast('记录已删除');
     }
   }
@@ -584,8 +693,10 @@ const GPTResearcher = (() => {
   const clearConversationHistory = () => {
     if (confirm('确定要清空全部研究历史吗？此操作不可撤销。')) {
       conversationHistory = [];
+      clearTaskChatHistory();
       saveConversationHistory();
       renderHistoryEntries();
+      renderWorkbenchHistory();
       showToast('研究历史已清空');
     }
   }
@@ -646,8 +757,10 @@ const GPTResearcher = (() => {
       entryElement.className = 'history-entry';
       entryElement.setAttribute('data-id', index);
 
-      // Make the entire entry clickable to load it
-      entryElement.addEventListener('click', () => {
+      // Make the card clickable, while keeping file actions independent.
+      entryElement.addEventListener('click', (event) => {
+        const target = event.target;
+        if (target.closest('a, button')) return;
         loadResearchEntry(index);
       });
 
@@ -693,15 +806,22 @@ const GPTResearcher = (() => {
         });
       }
 
+      entryElement.querySelectorAll('.history-entry-format a').forEach((link) => {
+        link.addEventListener('click', (event) => {
+          event.stopPropagation();
+        });
+      });
+
       historyEntries.appendChild(entryElement);
       setTimeout(() => {
         entryElement.style.animationDelay = `${index * 50}ms`;
       }, 0);
     });
+    renderWorkbenchHistory();
   }
 
   // Load a research entry from history
-  const loadResearchEntry = (index) => {
+  const loadResearchEntry = async (index) => {
     const entry = conversationHistory[index];
     if (!entry) return;
 
@@ -746,8 +866,21 @@ const GPTResearcher = (() => {
     // Reset UI state and report-specific buttons
     updateState('initial'); // This will hide copy buttons etc.
 
-    const reportContent = entry.content || entry.answer || '';
+    showToast('正在读取历史报告...');
+    const reportContent = await resolveHistoryReportContent(entry);
     if (reportContent) {
+      const restoredCompetitiveAnalysis = await resolveHistoryCompetitiveAnalysis(entry);
+      const analysisForHistory = restoredCompetitiveAnalysis || {
+        request: entry.competitiveResearch || {},
+        intermediate_results: entry.intermediateResults || {},
+        competitive_matrix: entry.competitiveMatrix || {},
+        ...(entry.qualityStats ? {
+          section_completion_rate: entry.qualityStats.sectionCompletionRate,
+          source_count: entry.qualityStats.sourceCount,
+          official_like_source_count: entry.qualityStats.officialLikeSourceCount,
+          official_like_source_rate: entry.qualityStats.officialLikeSourceRate,
+        } : {})
+      };
       const converter = new showdown.Converter({
         ghCodeBlocks: true,
         tables: true,
@@ -761,18 +894,18 @@ const GPTResearcher = (() => {
       allReports = reportContent;
       writeReport({ output: reportContent, type: 'report' }, converter, true, false);
       updateState('finished');
-      updateDownloadLink({ output: entry.links || {} });
-      renderCompetitiveAnalysis(entry.competitiveAnalysis || {
-        request: entry.competitiveResearch || {},
-        intermediate_results: entry.intermediateResults || {},
-        competitive_matrix: entry.competitiveMatrix || {},
-        ...(entry.qualityStats ? {
-          section_completion_rate: entry.qualityStats.sectionCompletionRate,
-          source_count: entry.qualityStats.sourceCount,
-          official_like_source_count: entry.qualityStats.officialLikeSourceCount,
-          official_like_source_rate: entry.qualityStats.officialLikeSourceRate,
-        } : {})
+      updateDownloadLink({
+        output: {
+          ...(entry.links || {}),
+          competitive_analysis_data: analysisForHistory
+        }
       });
+      const restoredTitle = entry.prompt || '调研报告';
+      const resultTitle = document.getElementById('resultTaskTitle');
+      const conversationTitle = document.getElementById('resultConversationTitle');
+      if (resultTitle) resultTitle.textContent = restoredTitle;
+      if (conversationTitle) conversationTitle.textContent = restoredTitle;
+      restoreTaskChatHistory();
     }
 
     // Close the history panel
@@ -790,7 +923,7 @@ const GPTResearcher = (() => {
     }
 
     // Inform user
-    showToast(reportContent ? '已从历史恢复研究报告。' : '研究参数已载入，可以重新开始研究。');
+    showToast(reportContent ? '已从历史恢复研究报告。' : '这条历史只有参数，没有保存报告结果。');
   }
 
   // Copy entry content to clipboard
@@ -859,6 +992,7 @@ const GPTResearcher = (() => {
       prompt,
       content: report || '',
       links,
+      competitiveAnalysis,
       timestamp
     };
 
@@ -870,6 +1004,10 @@ const GPTResearcher = (() => {
     conversationHistory.unshift(historyEntry);
     saveConversationHistory();
     renderHistoryEntries();
+    activeResearchTask = null;
+    activeHistoryIndex = 0;
+    syncTaskUrl(historyEntry.id);
+    renderWorkbenchHistory();
     document.getElementById('historyPanel').classList.add('open');
 
     const metadata = {
@@ -1112,7 +1250,51 @@ const GPTResearcher = (() => {
       lastActivityTime = Date.now();
       updateWebSocketStatus();
 
-      if (data.type === 'logs') {
+      if (data.type === 'task_accepted') {
+        activeResearchTask = {
+          id: data.task_id,
+          prompt: data.title || activeResearchTask?.prompt || '未命名调研',
+          timestamp: data.created_at || activeResearchTask?.timestamp || new Date().toISOString(),
+          status: 'running',
+          stage: normalizeRestoredResearchStage(data.current_stage)
+        };
+        isResearchActive = true;
+        persistActiveResearchTask();
+        syncTaskUrl(activeResearchTask.id);
+        renderWorkbenchHistory();
+      } else if (data.type === 'task_snapshot') {
+        activeResearchTask = {
+          id: data.task_id,
+          prompt: data.title || activeResearchTask?.prompt || '未命名调研',
+          timestamp: data.created_at || activeResearchTask?.timestamp || new Date().toISOString(),
+          status: data.status || 'running',
+          stage: normalizeRestoredResearchStage(data.current_stage)
+        };
+        if (activeResearchTask.status === 'running') {
+          isResearchActive = true;
+          persistActiveResearchTask();
+          syncTaskUrl(activeResearchTask.id);
+          setWorkbenchView('running', { preserveUrl: true });
+          updateResearchStage(activeResearchTask.stage);
+          renderWorkbenchHistory();
+        } else if (activeResearchTask.status === 'failed') {
+          clearActiveResearchTask();
+          updateState('error');
+        }
+      } else if (data.type === 'task_not_found') {
+        clearActiveResearchTask();
+        isResearchActive = false;
+        syncTaskUrl(null);
+        setWorkbenchView('welcome', { preserveUrl: true });
+        renderWorkbenchHistory();
+        showToast('进行中的调研任务已失效，请重新发起。');
+      } else if (data.type === 'logs') {
+        const restoredStage = normalizeRestoredResearchStage(data.metadata?.stage);
+        if (activeResearchTask?.id && restoredStage) {
+          activeResearchTask.stage = restoredStage;
+          persistActiveResearchTask();
+          updateResearchStage(restoredStage);
+        }
         if (data.content === 'subqueries' && data.metadata && Array.isArray(data.metadata)) {
           displaySubQuestions(data.metadata)
         }
@@ -1129,6 +1311,7 @@ const GPTResearcher = (() => {
         updateState('finished')
         downloadLinkData = updateDownloadLink(data)
         isResearchActive = false;
+        clearActiveResearchTask();
 
         // Save to history now that research is complete
         if (reportContent && downloadLinkData) {
@@ -1173,9 +1356,8 @@ const GPTResearcher = (() => {
       // Ensure the research icon is spinning when connection is established
       updateResearchIcon(true);
 
-      // If this is a reconnection and we're in research mode, don't send a new start command
-      if (isResearchActive && lastRequestData) {
-        console.log("Reconnected during active research, not sending new start command");
+      if (activeResearchTask?.id && activeResearchTask.status === 'running') {
+        socket.send(`subscribe ${JSON.stringify({ task_id: activeResearchTask.id })}`)
         return;
       }
 
@@ -1229,21 +1411,18 @@ const GPTResearcher = (() => {
 
       console.log("WebSocket connection closed", event);
 
-      if (isResearchActive) {
-        failActiveResearch(
-          '\u8fde\u63a5\u5df2\u65ad\u5f00\uff0c\u7814\u7a76\u4efb\u52a1\u5df2\u505c\u6b62\uff0c\u8bf7\u91cd\u65b0\u53d1\u8d77\u4efb\u52a1\u3002',
-          `WebSocket closed: code=${event.code}, reason=${event.reason || ''}`
-        );
+      if (isResearchActive && activeResearchTask?.id) {
+        showToast('连接暂时中断，后台调研仍在继续，正在恢复进度。');
+        clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(() => {
+          dispose_socket = listenToSockEvents();
+        }, reconnectInterval);
       }
     }
 
     socket.onerror = (error) => {
       console.error("WebSocket error:", error);
       updateWebSocketStatus();
-      failActiveResearch(
-        '\u8fde\u63a5\u51fa\u9519\uff0c\u7814\u7a76\u4efb\u52a1\u5df2\u505c\u6b62\uff0c\u8bf7\u91cd\u65b0\u53d1\u8d77\u4efb\u52a1\u3002',
-        'WebSocket error'
-      );
     }
 
     // return dispose function
@@ -1380,6 +1559,110 @@ const GPTResearcher = (() => {
     reportContainer.scrollTop = reportContainer.scrollHeight;
   }
 
+  const normalizeReportCitationUrl = (value) => {
+    try {
+      const url = new URL(String(value || ''), window.location.href);
+      if (!['http:', 'https:'].includes(url.protocol)) return '';
+      url.hash = '';
+      [
+        ...url.searchParams.keys()
+      ].forEach((key) => {
+        const normalizedKey = key.toLowerCase();
+        if (
+          normalizedKey.startsWith('utm_')
+          || ['fbclid', 'gclid', 'ref', 'source', 'spm'].includes(normalizedKey)
+        ) {
+          url.searchParams.delete(key);
+        }
+      });
+      if (url.pathname !== '/') url.pathname = url.pathname.replace(/\/+$/, '');
+      return url.toString();
+    } catch (error) {
+      return '';
+    }
+  };
+
+  const normalizeReadingSourceCategory = (value) => {
+    const category = String(value || '').toLowerCase();
+    if (category === 's' || category === 'official') return 'official';
+    if (['a', 'authoritative', 'quasi_official', 'media'].includes(category)) return 'authoritative';
+    if (category === 'c' || category === 'weak_verification') return 'weak_verification';
+    return 'ordinary';
+  };
+
+  const buildLegacyReadingContext = (analysis = {}) => {
+    const report = document.getElementById('reportContainer');
+    const citations = [...(report?.querySelectorAll('a[href]') || [])]
+      .filter((link) => !link.querySelector('img') && !/\.(?:avif|gif|jpe?g|png|svg|webp)(?:[?#]|$)/i.test(link.href))
+      .map((link) => normalizeReportCitationUrl(link.getAttribute('href')))
+      .filter(Boolean);
+    const uniqueCitations = [...new Set(citations)];
+    const domainMap = new Map();
+    const storedClassifications = Array.isArray(analysis?.source_tiers?.classified_urls)
+      ? analysis.source_tiers.classified_urls
+      : [];
+    const storedCategoryByUrl = new Map();
+    const storedCategoryByDomain = new Map();
+
+    storedClassifications.forEach((item) => {
+      const normalizedUrl = normalizeReportCitationUrl(item?.url);
+      if (!normalizedUrl) return;
+      const category = normalizeReadingSourceCategory(item?.tier || item?.category);
+      const domain = new URL(normalizedUrl).hostname.replace(/^www\./, '');
+      storedCategoryByUrl.set(normalizedUrl, category);
+      storedCategoryByDomain.set(domain, category);
+    });
+
+    uniqueCitations.forEach((url) => {
+      const domain = new URL(url).hostname.replace(/^www\./, '');
+      const category = storedCategoryByUrl.get(url) || storedCategoryByDomain.get(domain) || 'ordinary';
+      const existing = domainMap.get(domain) || {
+        domain,
+        category,
+        count: 0,
+        urls: []
+      };
+      existing.count += 1;
+      existing.urls.push(url);
+      domainMap.set(domain, existing);
+    });
+    const sourceDomains = [...domainMap.values()].sort((a, b) => b.count - a.count || a.domain.localeCompare(b.domain));
+    const hasStoredClassifications = storedClassifications.length > 0;
+    const countCategory = (category) => sourceDomains
+      .filter((item) => item.category === category)
+      .reduce((total, item) => total + Number(item.count || 0), 0);
+    const officialCount = hasStoredClassifications ? countCategory('official') : null;
+    const authoritativeCount = hasStoredClassifications ? countCategory('authoritative') : null;
+    const ordinaryCount = countCategory('ordinary');
+    const weakVerificationCount = hasStoredClassifications ? countCategory('weak_verification') : null;
+
+    const selectedRange = analysis?.request?.time_range || '当前公开信息';
+    const timeNote = selectedRange === '当前公开信息'
+      ? '以当前可获取的公开信息为准；较早资料仅用于理解产品背景。'
+      : `优先使用${selectedRange}公开信息；较早资料仅用于理解产品背景，不代表近期更新。`;
+
+    return {
+      cited_source_count: uniqueCitations.length,
+      official_source_count: officialCount,
+      authoritative_source_count: authoritativeCount,
+      ordinary_source_count: ordinaryCount,
+      weak_verification_source_count: weakVerificationCount,
+      source_domains: sourceDomains,
+      supported_claims: [],
+      attention_items: [],
+      time_scope: {
+        selected_range: selectedRange,
+        note: timeNote
+      },
+      missing_items: [],
+      confidence_summary: uniqueCitations.length
+        ? hasStoredClassifications
+          ? '本说明根据报告正文中的实际引用及历史来源分级生成，具体结论建议结合原始页面复核。'
+          : '旧报告未保留完整来源分级，以下引用按普通公开来源展示，建议结合原始页面复核。'
+        : '正文暂未检测到可核验的外部引用。'
+    };
+  };
+
   const renderCompetitiveAnalysis = (analysis) => {
     const container = document.getElementById('analysisSummaryContainer');
     if (!container) return;
@@ -1390,182 +1673,165 @@ const GPTResearcher = (() => {
       return;
     }
 
-    const request = analysis.request || {};
-    const intermediate = analysis.intermediate_results || {};
-    const matrix = analysis.competitive_matrix || {};
-    const coverage = matrix.coverage || {};
-    const sourceTierCounts = analysis.source_tiers?.counts || {};
-    const agentTrace = analysis.agent_trace || {};
-    const gapEvaluation = analysis.gap_evaluation || {};
-    const evidenceLedger = Array.isArray(analysis.evidence_ledger) ? analysis.evidence_ledger : [];
-    const repairActions = Array.isArray(analysis.repair_actions) ? analysis.repair_actions : [];
-    const toolCalls = Array.isArray(agentTrace.tool_calls) ? agentTrace.tool_calls : [];
-    const evidenceDelta = agentTrace.evidence_delta || {};
-    const hardGates = Array.isArray(gapEvaluation.hard_gates) ? gapEvaluation.hard_gates : (gapEvaluation.gaps || []);
-    const softWarnings = Array.isArray(gapEvaluation.soft_warnings) ? gapEvaluation.soft_warnings : [];
-    const evaluatorMetrics = gapEvaluation.metrics || {};
-    const initialGapEvaluation = analysis.initial_gap_evaluation || {};
-    const finalGapEvaluation = analysis.final_gap_evaluation || gapEvaluation;
-    const repairOutcome = analysis.repair_outcome || {};
-    const initialHardGates = Array.isArray(initialGapEvaluation.hard_gates) ? initialGapEvaluation.hard_gates : (initialGapEvaluation.gaps || []);
-    const finalHardGates = Array.isArray(finalGapEvaluation.hard_gates) ? finalGapEvaluation.hard_gates : (finalGapEvaluation.gaps || []);
-    const resolvedGaps = Array.isArray(repairOutcome.resolved_gaps) ? repairOutcome.resolved_gaps : [];
-    const unresolvedGaps = Array.isArray(repairOutcome.unresolved_gaps) ? repairOutcome.unresolved_gaps : [];
-    const dimensions = Array.isArray(matrix.dimensions) ? matrix.dimensions : [];
-    const rows = Array.isArray(matrix.rows) ? matrix.rows : [];
-    const warnings = [
-      ...(analysis.source_warnings || []),
-      ...(analysis.time_scope_warnings || [])
-    ];
-
     const escape = (value) => escapeHtml(String(value ?? ''));
-    const riskLabels = {
-      high: '高风险',
-      medium: '中风险',
-      low_with_warnings: '低风险（有提示）',
-      low: '低风险'
+    const readingContext = analysis.reading_context || buildLegacyReadingContext(analysis);
+    const citedCount = Number(readingContext.cited_source_count) || 0;
+    const officialCount = readingContext.official_source_count;
+    const authoritativeCount = readingContext.authoritative_source_count
+      ?? readingContext.quasi_official_source_count;
+    const ordinaryCount = readingContext.ordinary_source_count;
+    const weakVerificationCount = readingContext.weak_verification_source_count;
+    const sourceClassificationComplete = officialCount !== null
+      && officialCount !== undefined
+      && authoritativeCount !== null
+      && authoritativeCount !== undefined
+      && Number.isFinite(Number(officialCount))
+      && Number.isFinite(Number(authoritativeCount));
+    const officialAndAuthoritativeTotal = sourceClassificationComplete
+      ? Number(officialCount) + Number(authoritativeCount)
+      : null;
+    const supportedClaims = Array.isArray(readingContext.supported_claims) ? readingContext.supported_claims.slice(0, 2) : [];
+    const attentionItems = Array.isArray(readingContext.attention_items) ? readingContext.attention_items.slice(0, 3) : [];
+    const missingItems = Array.isArray(readingContext.missing_items) ? readingContext.missing_items : [];
+    const sourceDomains = (Array.isArray(readingContext.source_domains) ? readingContext.source_domains : [])
+      .map((source) => ({
+        ...source,
+        category: normalizeReadingSourceCategory(source.category)
+      }));
+    const confidenceSummary = readingContext.confidence_summary
+      || (citedCount
+        ? '报告依据正文中实际引用的公开资料生成，建议结合原始页面理解具体结论。'
+        : '正文暂未检测到可核验的外部引用。');
+    const timeNote = readingContext.time_scope?.note
+      || '以当前可获取的公开信息为准；较早资料仅用于理解产品背景。';
+    const categoryLabels = {
+      official: '官方来源',
+      authoritative: '权威来源',
+      ordinary: '普通公开来源',
+      weak_verification: '弱验证来源'
     };
-    const gapTypeLabels = {
-      unknown_official_profile: '官方主体未确认',
-      missing_official_source: '缺少官方来源',
-      weak_critical_evidence: '关键事实证据弱',
-      missing_dimension_evidence: '维度证据缺失',
-      time_scope_risk: '时效范围风险',
-      time_uncertain_evidence: '日期不确定',
-      source_quality_risk: '来源质量风险',
-      source_quality_warning: '来源质量提示'
+    const sumDomainCategory = (category) => sourceDomains
+      .filter((source) => source.category === category)
+      .reduce((total, source) => total + Number(source.count || source.urls?.length || 1), 0);
+    const hasNumericCount = (value) => value !== null
+      && value !== undefined
+      && Number.isFinite(Number(value));
+    const tierCounts = {
+      official: sourceClassificationComplete ? Number(officialCount) : null,
+      authoritative: sourceClassificationComplete ? Number(authoritativeCount) : null,
+      ordinary: hasNumericCount(ordinaryCount) ? Number(ordinaryCount) : sumDomainCategory('ordinary'),
+      weak_verification: hasNumericCount(weakVerificationCount)
+        ? Number(weakVerificationCount)
+        : sourceClassificationComplete
+          ? sumDomainCategory('weak_verification')
+          : null
     };
-    const renderGapItem = (gap) => `<li><span>${escape(gapTypeLabels[gap.type] || gap.type)}</span>${escape(gap.competitor || '整体')} / ${escape(gap.dimension || '-')}：${escape(gap.reason)}</li>`;
-    const cellsHtml = rows.map((row) => `
-      <tr>
-        <th>${escape(row.competitor)}</th>
-        ${dimensions.map((dimension) => {
-          const cell = row.cells?.[dimension] || {};
-          const isFound = cell.status === 'found';
-          return `<td class="${isFound ? 'matrix-found' : 'matrix-missing'}">${escape(cell.summary || '暂未提取')}</td>`;
-        }).join('')}
-      </tr>
-    `).join('');
+
+    const renderReadingList = (items) => (
+      items.map((item) => `<li>${escape(typeof item === 'string' ? item : item?.text || item?.claim || '')}</li>`).join('')
+    );
+
+    const domainRows = sourceDomains.map((source) => {
+      const urls = Array.isArray(source.urls) ? source.urls : [];
+      const firstUrl = normalizeReportCitationUrl(urls[0]);
+      const label = categoryLabels[source.category] || categoryLabels.ordinary;
+      const domain = source.domain || (firstUrl ? new URL(firstUrl).hostname.replace(/^www\./, '') : '公开网页');
+      const title = firstUrl
+        ? `<a href="${escape(firstUrl)}" target="_blank" rel="noopener noreferrer">${escape(domain)}</a>`
+        : `<span>${escape(domain)}</span>`;
+      return `
+        <li class="reading-context-domain">
+          <div>${title}<small>${escape(source.count || urls.length || 1)} 条引用</small></div>
+          <span class="reading-context-source-type">${escape(label)}</span>
+        </li>
+      `;
+    }).join('');
 
     container.innerHTML = `
-      <div class="analysis-summary-panel">
-        <div class="analysis-summary-header">
-          <h3>研究过程摘要</h3>
-          <span>确定性后处理结果</span>
+      <section class="report-reading-context" id="reportReadingContext" aria-labelledby="readingContextTitle">
+        <div class="reading-context-header">
+          <div>
+            <span class="reading-context-eyebrow">阅读前说明</span>
+            <h2 id="readingContextTitle">这份报告如何被资料支撑</h2>
+          </div>
+          ${citedCount ? `
+            <div class="reading-context-metrics" aria-label="引用来源统计">
+              <div><strong>${escape(citedCount)}</strong><span>引用来源</span></div>
+              <div>
+                <strong>${sourceClassificationComplete ? escape(officialAndAuthoritativeTotal) : '—'}</strong>
+                <span>${sourceClassificationComplete ? '官方/权威' : '分级待复核'}</span>
+              </div>
+            </div>
+          ` : ''}
         </div>
-        <div class="analysis-summary-grid">
-          <div><strong>研究主题</strong><span>${escape(request.research_topic || '-')}</span></div>
-          <div><strong>竞品数量</strong><span>${escape((request.competitors || []).length)}</span></div>
-          <div><strong>子问题数</strong><span>${escape((intermediate.sub_queries || []).length)}</span></div>
-          <div><strong>来源 URL</strong><span>${escape((intermediate.source_urls || []).length || analysis.source_count || 0)}</span></div>
-          <div><strong>官方倾向来源</strong><span>${escape(analysis.official_like_source_count || 0)}</span></div>
-          <div><strong>来源分级</strong><span>${escape(`S${sourceTierCounts.S || 0} / A${sourceTierCounts.A || 0} / B${sourceTierCounts.B || 0} / C${sourceTierCounts.C || 0}`)}</span></div>
-          <div><strong>章节完整率</strong><span>${escape(Math.round((analysis.section_completion_rate || 0) * 100))}%</span></div>
-          <div><strong>矩阵覆盖率</strong><span>${escape(Math.round((coverage.coverage_rate || 0) * 100))}%</span></div>
-        </div>
-        ${intermediate.sub_queries?.length ? `
-          <div class="analysis-subqueries">
-            <strong>Planner 生成的子问题</strong>
-            <ol>${intermediate.sub_queries.slice(0, 8).map((query) => `<li>${escape(query)}</li>`).join('')}</ol>
+        <p class="reading-context-summary">${escape(confidenceSummary)}</p>
+        ${attentionItems.length ? `
+          <div class="reading-context-attention">
+            <span>优先确认</span>
+            <p>${escape(attentionItems[0])}</p>
           </div>
         ` : ''}
-        ${agentTrace.enabled ? `
-          <div class="agent-trace-panel">
-            <div class="agent-trace-header">
-              <strong>Agent 闭环过程</strong>
-              <span>${escape(agentTrace.paradigm || 'plan-and-execute + evaluator-driven repair')}</span>
-            </div>
-            <div class="agent-trace-grid">
-              <div><strong>评估风险</strong><span>${escape(gapEvaluation.overall_risk || 'low')}</span></div>
-              <div><strong>优先缺口</strong><span>${escape((gapEvaluation.gaps || []).length || 0)}</span></div>
-              <div><strong>补救动作</strong><span>${escape(repairActions.length)}</span></div>
-              <div><strong>工具步骤</strong><span>${escape(toolCalls.length)}</span></div>
-              <div><strong>证据增量</strong><span>${escape(`${evidenceDelta.before || 0} -> ${evidenceDelta.after || evidenceLedger.length || 0}`)}</span></div>
-              <div><strong>补搜来源</strong><span>${escape(analysis.repaired_source_count || 0)}</span></div>
-            </div>
-            <div class="agent-repair-outcome">
-              <strong>Repair Loop 闭环结果</strong>
-              <div class="agent-trace-grid">
-                <div><strong>补搜结果</strong><span>${escape(({ resolved: '已解决', partially_resolved: '部分解决', unresolved: '未解决，需人工确认', not_triggered: '未触发补搜' })[repairOutcome.status] || repairOutcome.status || '未记录')}</span></div>
-                <div><strong>首次硬门槛</strong><span>${escape(initialHardGates.length)}</span></div>
-                <div><strong>补搜后硬门槛</strong><span>${escape(finalHardGates.length)}</span></div>
-                <div><strong>已解决缺口</strong><span>${escape(resolvedGaps.length)}</span></div>
-                <div><strong>未解决缺口</strong><span>${escape(unresolvedGaps.length)}</span></div>
-                <div><strong>新增证据</strong><span>${escape(repairOutcome.evidence_added ?? 0)}</span></div>
-                <div><strong>补搜新增来源</strong><span>${escape(repairOutcome.repaired_source_count ?? analysis.repaired_source_count ?? 0)}</span></div>
-              </div>
-            </div>
-            ${resolvedGaps.length ? `
-              <div class="agent-gap-list agent-resolved-gap-list">
-                <strong>补搜已解决缺口</strong>
-                <ul>${resolvedGaps.slice(0, 5).map(renderGapItem).join('')}</ul>
-              </div>
+        <p class="reading-context-time">
+          <i class="fas fa-clock" aria-hidden="true"></i>
+          <span>${escape(timeNote)}</span>
+        </p>
+        <details class="reading-context-details" id="readingContextDetails">
+          <summary aria-expanded="false">
+            <span>查看详情</span>
+            <i class="fas fa-chevron-down" aria-hidden="true"></i>
+          </summary>
+          <div class="reading-context-expanded">
+            ${supportedClaims.length ? `
+              <section>
+                <h3>资料支撑较充分</h3>
+                <ul>${renderReadingList(supportedClaims)}</ul>
+              </section>
             ` : ''}
-            ${unresolvedGaps.length ? `
-              <div class="agent-gap-list agent-unresolved-gap-list">
-                <strong>补搜后仍未解决</strong>
-                <ul>${unresolvedGaps.slice(0, 5).map(renderGapItem).join('')}</ul>
-              </div>
+            ${attentionItems.length ? `
+              <section>
+                <h3>需要优先确认</h3>
+                <ul>${renderReadingList(attentionItems)}</ul>
+              </section>
             ` : ''}
-            <div class="agent-enterprise-evaluator">
-              <strong>企业级 Evaluator 结果</strong>
-              <div class="agent-trace-grid">
-                <div><strong>风险等级</strong><span>${escape(riskLabels[gapEvaluation.overall_risk] || gapEvaluation.overall_risk || '低风险')}</span></div>
-                <div><strong>硬门槛</strong><span>${escape(hardGates.length)}</span></div>
-                <div><strong>软风险</strong><span>${escape(softWarnings.length)}</span></div>
-                <div><strong>官方源数</strong><span>${escape(evaluatorMetrics.official_source_count ?? sourceTierCounts.S ?? 0)}</span></div>
-                <div><strong>低可信占比</strong><span>${escape(Math.round((evaluatorMetrics.low_credibility_source_rate || 0) * 100))}%</span></div>
-              </div>
-            </div>
-            ${hardGates.length ? `
-              <div class="agent-gap-list">
-                <strong>Evaluator 硬门槛（触发补搜）</strong>
-                <ul>${hardGates.slice(0, 5).map(renderGapItem).join('')}</ul>
-              </div>
-            ` : ''}
-            ${softWarnings.length ? `
-              <div class="agent-gap-list agent-soft-warning-list">
-                <strong>Evaluator 软风险（提示核验）</strong>
-                <ul>${softWarnings.slice(0, 5).map(renderGapItem).join('')}</ul>
-              </div>
-            ` : ''}
-            ${gapEvaluation.gaps?.length ? `
-              <div class="agent-gap-list">
-                <strong>Evaluator 发现的缺口</strong>
-                <ul>${gapEvaluation.gaps.slice(0, 5).map((gap) => `<li><span>${escape(gap.type)}</span>${escape(gap.competitor || '整体')} / ${escape(gap.dimension || '-')}：${escape(gap.reason)}</li>`).join('')}</ul>
-              </div>
-            ` : ''}
-            ${toolCalls.length ? `
-              <div class="agent-tool-list">
-                <strong>受控工具调用轨迹</strong>
-                <ol>${toolCalls.slice(0, 9).map((call) => `<li><span>${escape(call.tool)}</span>${escape(call.status)}：${escape(call.arguments?.query || call.reason || '')}</li>`).join('')}</ol>
-              </div>
+            ${sourceDomains.length ? `
+              <section>
+                <h3>引用来源概览</h3>
+                <div class="reading-context-tier-summary" aria-label="四档来源构成">
+                  ${Object.entries(categoryLabels).map(([category, label]) => `
+                    <div>
+                      <strong>${tierCounts[category] === null ? '—' : escape(tierCounts[category])}</strong>
+                      <span>${escape(label)}</span>
+                    </div>
+                  `).join('')}
+                </div>
+                <ul class="reading-context-domain-list">${domainRows}</ul>
+              </section>
+            ` : `
+              <section>
+                <h3>引用来源概览</h3>
+                <p class="reading-context-empty">正文暂未检测到可核验的外部引用。</p>
+              </section>
+            `}
+            ${missingItems.length ? `
+              <section>
+                <h3>暂未找到的公开信息</h3>
+                <ul>${renderReadingList(missingItems)}</ul>
+              </section>
             ` : ''}
           </div>
-        ` : ''}
-        ${warnings.length ? `
-          <div class="analysis-warnings">
-            <strong>后处理风险提示</strong>
-            <ul>${warnings.map((warning) => `<li>${escape(warning)}</li>`).join('')}</ul>
-          </div>
-        ` : ''}
-        ${rows.length && dimensions.length ? `
-          <div class="analysis-matrix-wrap">
-            <strong>基础竞品矩阵</strong>
-            <table class="analysis-matrix">
-              <thead>
-                <tr>
-                  <th>竞品</th>
-                  ${dimensions.map((dimension) => `<th>${escape(dimension)}</th>`).join('')}
-                </tr>
-              </thead>
-              <tbody>${cellsHtml}</tbody>
-            </table>
-          </div>
-        ` : ''}
-      </div>
+        </details>
+      </section>
     `;
     container.style.display = 'block';
+    const reportSurface = document.getElementById('researchResultHost');
+    if (reportSurface) reportSurface.scrollTop = 0;
+    const readingContextDetails = document.getElementById('readingContextDetails');
+    readingContextDetails.addEventListener('toggle', () => {
+      readingContextDetails.querySelector('summary')?.setAttribute(
+        'aria-expanded',
+        String(readingContextDetails.open)
+      );
+    });
   }
 
   const updateDownloadLink = (data) => {
@@ -1576,8 +1842,9 @@ const GPTResearcher = (() => {
 
     const { pdf, docx, md, json, competitive_analysis } = data.output;
     const competitiveAnalysis = data.output.competitive_analysis_data || null;
+    const analysisForReading = competitiveAnalysis || { request: getCompetitiveResearchData() };
     console.log('Received paths:', { pdf, docx, md, json, competitive_analysis });
-    renderCompetitiveAnalysis(competitiveAnalysis);
+    renderCompetitiveAnalysis(analysisForReading);
 
     // Store these links for history
     const currentLinks = {
@@ -1647,6 +1914,664 @@ const GPTResearcher = (() => {
     }
   }
 
+  const readLocalJson = (key, fallback) => {
+    try {
+      const value = localStorage.getItem(key);
+      return value ? JSON.parse(value) : fallback;
+    } catch (error) {
+      console.warn(`Unable to read ${key} from local storage:`, error);
+      return fallback;
+    }
+  }
+
+  const writeLocalJson = (key, value) => {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+      return true;
+    } catch (error) {
+      console.warn(`Unable to write ${key} to local storage:`, error);
+      return false;
+    }
+  }
+
+  const normalizeRestoredResearchStage = (stage) => {
+    const value = String(stage || '').toLowerCase();
+    if (!value) return 'plan';
+    if (/report|writing|generation/.test(value)) return 'report';
+    if (/analysis|evaluation|evidence|semantic|remediation|validation/.test(value)) return 'analysis';
+    if (/search|research|scrap|retriev|source/.test(value)) return 'search';
+    return 'plan';
+  }
+
+  const persistActiveResearchTask = () => {
+    if (!activeResearchTask?.id || activeResearchTask.status !== 'running') return;
+    writeLocalJson(ACTIVE_RESEARCH_STORAGE_KEY, activeResearchTask);
+  }
+
+  const clearActiveResearchTask = () => {
+    try {
+      localStorage.removeItem(ACTIVE_RESEARCH_STORAGE_KEY);
+    } catch (error) {
+      console.warn('Unable to clear active research recovery state:', error);
+    }
+    activeResearchTask = null;
+  }
+
+  const restoreStoredActiveResearch = () => {
+    const stored = readLocalJson(ACTIVE_RESEARCH_STORAGE_KEY, null);
+    if (!stored?.id || stored.status !== 'running') return false;
+    activeResearchTask = {
+      id: String(stored.id),
+      prompt: stored.prompt || '未命名调研',
+      timestamp: stored.timestamp || new Date().toISOString(),
+      status: 'running',
+      stage: normalizeRestoredResearchStage(stored.stage)
+    };
+    isResearchActive = true;
+    syncTaskUrl(activeResearchTask.id);
+    return true;
+  }
+
+  const getActiveResultTaskId = () => {
+    if (activeHistoryIndex !== null && conversationHistory[activeHistoryIndex]) {
+      return getHistoryEntryId(conversationHistory[activeHistoryIndex], activeHistoryIndex);
+    }
+    if (activeResearchTask?.id) return activeResearchTask.id;
+    const match = window.location.hash.match(/^#task=(.+)$/);
+    return match ? decodeURIComponent(match[1]) : '';
+  }
+
+  const getStoredTaskChats = () => readLocalJson(RESULT_CHAT_STORAGE_KEY, {});
+
+  const persistTaskChatMessage = (message, isUser, timestamp = new Date().toISOString()) => {
+    const taskId = getActiveResultTaskId();
+    if (!taskId || restoringTaskChatHistory) return;
+    const chats = getStoredTaskChats();
+    const messages = Array.isArray(chats[taskId]) ? chats[taskId] : [];
+    messages.push({
+      role: isUser ? 'user' : 'assistant',
+      content: String(message),
+      timestamp
+    });
+    chats[taskId] = messages.slice(-100);
+    writeLocalJson(RESULT_CHAT_STORAGE_KEY, chats);
+  }
+
+  const removeTaskChatHistory = (taskId) => {
+    if (!taskId) return;
+    const chats = getStoredTaskChats();
+    if (!Object.prototype.hasOwnProperty.call(chats, taskId)) return;
+    delete chats[taskId];
+    writeLocalJson(RESULT_CHAT_STORAGE_KEY, chats);
+  }
+
+  const clearTaskChatHistory = () => {
+    try {
+      localStorage.removeItem(RESULT_CHAT_STORAGE_KEY);
+    } catch (error) {
+      console.warn('Unable to clear task chat history:', error);
+    }
+  }
+
+  const restoreTaskChatHistory = () => {
+    const chatMessages = document.getElementById('chatMessages');
+    if (!chatMessages) return;
+    const taskId = getActiveResultTaskId();
+    const chats = getStoredTaskChats();
+    const messages = taskId && Array.isArray(chats[taskId]) ? chats[taskId] : [];
+    chatMessages.innerHTML = '';
+    restoringTaskChatHistory = true;
+    if (messages.length) {
+      messages.forEach((message) => {
+        addChatMessage(message.content, message.role === 'user', {
+          persist: false,
+          timestamp: message.timestamp
+        });
+      });
+    } else {
+      addChatMessage('我可以继续回答关于这份研究报告的问题。你想进一步了解什么？', false, {
+        persist: false
+      });
+    }
+    restoringTaskChatHistory = false;
+  }
+
+  const getResultLayoutState = () => {
+    const stored = readLocalJson(RESULT_LAYOUT_STORAGE_KEY, {});
+    const storedWidth = Number(stored.conversationWidth);
+    return {
+      sidebarCollapsed: Boolean(stored.sidebarCollapsed),
+      reportCollapsed: Boolean(stored.reportCollapsed),
+      mobilePane: stored.mobilePane === 'conversation' ? 'conversation' : 'report',
+      conversationWidth: Number.isFinite(storedWidth) && storedWidth > 0 ? storedWidth : null
+    };
+  }
+
+  const persistResultLayout = () => {
+    const workbench = document.getElementById('resultWorkbench');
+    writeLocalJson(RESULT_LAYOUT_STORAGE_KEY, {
+      sidebarCollapsed: document.body.classList.contains('sidebar-collapsed'),
+      reportCollapsed: workbench?.classList.contains('is-report-collapsed') || false,
+      mobilePane: workbench?.dataset.activePane === 'conversation' ? 'conversation' : 'report',
+      conversationWidth: resultConversationWidth
+    });
+  }
+
+  const applyResultConversationWidth = (width, persist = true) => {
+    const workbench = document.getElementById('resultWorkbench');
+    const resizer = document.getElementById('resultColumnResizer');
+    if (!workbench || !resizer || window.matchMedia('(max-width: 760px)').matches) return;
+
+    const workbenchWidth = workbench.getBoundingClientRect().width || window.innerWidth;
+    const minConversationWidth = 320;
+    const minReportWidth = workbenchWidth < 700 ? 280 : 360;
+    const maxConversationWidth = Math.max(minConversationWidth, workbenchWidth - minReportWidth - 8);
+    const nextWidth = Math.min(maxConversationWidth, Math.max(minConversationWidth, Number(width) || 420));
+
+    resultConversationWidth = Math.round(nextWidth);
+    workbench.style.setProperty('--result-conversation-width', `${resultConversationWidth}px`);
+    resizer.setAttribute('aria-valuemin', String(minConversationWidth));
+    resizer.setAttribute('aria-valuemax', String(Math.round(maxConversationWidth)));
+    resizer.setAttribute('aria-valuenow', String(resultConversationWidth));
+    if (persist) persistResultLayout();
+  }
+
+  const setSidebarCollapsed = (collapsed, persist = true) => {
+    document.body.classList.toggle('sidebar-collapsed', collapsed);
+    const button = document.getElementById('sidebarCollapseButton');
+    if (button) {
+      button.setAttribute('aria-expanded', String(!collapsed));
+      button.setAttribute('aria-label', collapsed ? '展开任务栏' : '收起任务栏');
+      button.querySelector('i')?.classList.toggle('fa-chevron-right', collapsed);
+      button.querySelector('i')?.classList.toggle('fa-chevron-left', !collapsed);
+    }
+    if (persist) persistResultLayout();
+  }
+
+  const setReportCollapsed = (collapsed, persist = true) => {
+    const workbench = document.getElementById('resultWorkbench');
+    workbench?.classList.toggle('is-report-collapsed', collapsed);
+    const button = document.getElementById('resultReportCollapseButton');
+    if (button) {
+      button.setAttribute('aria-expanded', String(!collapsed));
+      button.setAttribute('aria-label', collapsed ? '展开报告栏' : '收起报告栏');
+    }
+    if (persist) persistResultLayout();
+  }
+
+  const setResultMobilePane = (pane, persist = true) => {
+    const nextPane = pane === 'conversation' ? 'conversation' : 'report';
+    const workbench = document.getElementById('resultWorkbench');
+    if (workbench) workbench.dataset.activePane = nextPane;
+    document.querySelectorAll('[data-result-pane]').forEach((button) => {
+      button.setAttribute('aria-selected', String(button.dataset.resultPane === nextPane));
+    });
+    if (persist) persistResultLayout();
+  }
+
+  const setResultTocOpen = (open) => {
+    const toc = document.getElementById('researchToc');
+    const button = document.getElementById('resultTocButton');
+    if (toc) toc.hidden = !open;
+    if (button) button.setAttribute('aria-expanded', String(open));
+  }
+
+  const setResultExportOpen = (open) => {
+    const menu = document.getElementById('resultExportMenu');
+    const button = document.getElementById('resultExportButton');
+    if (menu) menu.hidden = !open;
+    if (button) button.setAttribute('aria-expanded', String(open));
+  }
+
+  const setWorkbenchView = (view, options = {}) => {
+    const target = document.querySelector(`[data-workbench-view="${view}"]`);
+    if (!target) return;
+
+    currentWorkbenchView = view;
+    document.querySelectorAll('[data-workbench-view]').forEach((element) => {
+      element.classList.toggle('is-active', element === target);
+    });
+
+    const form = document.getElementById('researchForm');
+    if (form && view === 'setup-basic') {
+      form.dataset.workbenchStep = 'basic';
+      document.getElementById('researchFormHost')?.appendChild(form);
+    }
+    if (form && view === 'setup-options') {
+      form.dataset.workbenchStep = 'options';
+      document.getElementById('researchOptionsHost')?.appendChild(form);
+      updateResearchSummary();
+    }
+
+    const titles = {
+      welcome: ['竞品调研', '工作台'],
+      'setup-basic': ['新建调研', '定义研究对象'],
+      'setup-options': ['新建调研', '确认研究方案'],
+      running: ['当前任务', '调研进行中'],
+      result: ['调研结果', options.title || document.getElementById('resultTaskTitle')?.textContent || '调研报告'],
+      failed: ['当前任务', '调研未完成']
+    };
+    const [eyebrow, title] = titles[view] || titles.welcome;
+    const eyebrowNode = document.getElementById('workspaceEyebrow');
+    const titleNode = document.getElementById('workspaceTitle');
+    if (eyebrowNode) eyebrowNode.textContent = eyebrow;
+    if (titleNode) titleNode.textContent = title;
+
+    if (!options.preserveUrl && (view === 'welcome' || view.startsWith('setup-'))) {
+      syncTaskUrl(null);
+      activeHistoryIndex = null;
+      renderWorkbenchHistory();
+    }
+    document.body.classList.remove('sidebar-open');
+  }
+
+  const syncTaskUrl = (taskId) => {
+    const url = new URL(window.location.href);
+    if (taskId) {
+      url.hash = `task=${encodeURIComponent(taskId)}`;
+    } else if (url.hash.startsWith('#task=')) {
+      url.hash = '';
+    }
+    window.history.replaceState({ taskId: taskId || null }, '', url);
+  }
+
+  const getHistoryEntryId = (entry, index) => {
+    return entry?.id || getReportIdFromLinks(entry?.links) || `history-${index}`;
+  }
+
+  const formatWorkbenchTime = (timestamp) => {
+    if (!timestamp) return '时间未知';
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return '时间未知';
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  const getHistoryGroup = (timestamp) => {
+    const date = new Date(timestamp || 0);
+    const now = new Date();
+    const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const age = startToday - date;
+    if (age <= 0 && date.getDate() === now.getDate()) return '今天';
+    if (age < 7 * 86400000) return '近 7 天';
+    return '更早';
+  }
+
+  const renderWorkbenchHistory = () => {
+    const container = document.getElementById('workbenchHistory');
+    if (!container) return;
+    const query = (document.getElementById('workbenchHistorySearch')?.value || '').trim().toLowerCase();
+    const entries = conversationHistory.map((entry, index) => ({
+      entry,
+      index,
+      status: 'complete',
+      id: getHistoryEntryId(entry, index)
+    }));
+
+    if (activeResearchTask && !entries.some((item) => item.id === activeResearchTask.id)) {
+      entries.unshift({
+        entry: activeResearchTask,
+        index: -1,
+        status: activeResearchTask.status || 'running',
+        id: activeResearchTask.id
+      });
+    }
+    const searchControl = document.getElementById('workbenchHistorySearch')?.closest('.sidebar-search');
+    if (searchControl) {
+      searchControl.hidden = entries.length < HISTORY_SEARCH_THRESHOLD;
+    }
+
+    const filtered = entries.filter(({ entry }) => {
+      return !query || (entry.prompt || '').toLowerCase().includes(query);
+    });
+    if (!filtered.length) {
+      container.innerHTML = '<p class="history-empty">还没有调研记录。<br>从一次新调研开始。</p>';
+      return;
+    }
+
+    const groups = new Map([['今天', []], ['近 7 天', []], ['更早', []]]);
+    filtered.forEach((item) => groups.get(getHistoryGroup(item.entry.timestamp))?.push(item));
+    container.innerHTML = '';
+    groups.forEach((items, label) => {
+      if (!items.length) return;
+      const section = document.createElement('section');
+      section.className = 'workbench-history-group';
+      const heading = document.createElement('strong');
+      heading.textContent = label;
+      section.appendChild(heading);
+      items.forEach((item) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'workbench-history-item';
+        if (item.index === activeHistoryIndex || item.id === activeResearchTask?.id && currentWorkbenchView === 'running') {
+          button.classList.add('is-active');
+        }
+        button.innerHTML = `
+          <span class="history-status-dot ${item.status === 'running' ? 'is-running' : item.status === 'failed' ? 'is-failed' : ''}"></span>
+          <div><strong></strong><small></small></div>
+        `;
+        button.querySelector('strong').textContent = item.entry.prompt || '未命名调研';
+        button.querySelector('small').textContent =
+          `${item.status === 'running' ? '进行中' : item.status === 'failed' ? '失败' : '已完成'} · ${formatWorkbenchTime(item.entry.timestamp)}`;
+        button.addEventListener('click', async () => {
+          if (item.status === 'running') {
+            setWorkbenchView('running', { preserveUrl: true });
+            syncTaskUrl(item.id);
+          } else if (item.status === 'failed') {
+            setWorkbenchView('failed', { preserveUrl: true });
+            syncTaskUrl(item.id);
+          } else {
+            activeHistoryIndex = item.index;
+            syncTaskUrl(item.id);
+            renderWorkbenchHistory();
+            await loadResearchEntry(item.index);
+          }
+        });
+        section.appendChild(button);
+      });
+      container.appendChild(section);
+    });
+  }
+
+  const updateResearchSummary = () => {
+    const summary = document.getElementById('researchSummary');
+    if (!summary) return;
+    const topic = document.getElementById('researchTopic')?.value.trim() || document.getElementById('task')?.value.trim() || '未填写';
+    const competitors = document.getElementById('competitors')?.value.trim() || '未填写';
+    const region = document.getElementById('region')?.selectedOptions?.[0]?.textContent || '未填写';
+    summary.innerHTML = '';
+    [['研究主题', topic], ['竞品范围', competitors], ['研究地区', region]].forEach(([label, value]) => {
+      const item = document.createElement('div');
+      const small = document.createElement('small');
+      const strong = document.createElement('strong');
+      small.textContent = label;
+      strong.textContent = value;
+      item.append(small, strong);
+      summary.appendChild(item);
+    });
+  }
+
+  const validateBasicSetup = () => {
+    const task = document.getElementById('task');
+    const topic = document.getElementById('researchTopic');
+    const competitors = document.getElementById('competitors');
+    [task, topic, competitors].forEach((field) => field?.classList.remove('is-invalid'));
+    const hasTopic = Boolean(topic?.value.trim() || task?.value.trim());
+    const hasCompetitors = Boolean(competitors?.value.trim());
+    if (!hasTopic) (topic || task)?.classList.add('is-invalid');
+    if (!hasCompetitors) competitors?.classList.add('is-invalid');
+    if (!hasTopic || !hasCompetitors) {
+      showToast('请填写研究主题和竞品名称。');
+      return false;
+    }
+    if (!task.value.trim()) task.value = topic.value.trim();
+    if (!topic.value.trim()) topic.value = task.value.trim();
+    return true;
+  }
+
+  const updateResearchStage = (stage) => {
+    const order = ['plan', 'search', 'analysis', 'report'];
+    const currentIndex = Math.max(0, order.indexOf(stage));
+    document.querySelectorAll('[data-research-stage]').forEach((item) => {
+      const itemIndex = order.indexOf(item.dataset.researchStage);
+      item.classList.toggle('is-complete', itemIndex < currentIndex);
+      item.classList.toggle('is-active', itemIndex === currentIndex);
+    });
+    const copy = {
+      plan: ['正在建立研究框架', 'Agent 正在读取任务并制定信息采集计划。'],
+      search: ['正在搜索与采集证据', '正在获取公开信息、官方资料与可追溯来源。'],
+      analysis: ['正在对比分析', '正在归纳产品差异，并对关键事实进行交叉验证。'],
+      report: ['正在生成调研报告', '正在组织结论、引用与产品建议。']
+    }[stage] || [];
+    if (copy[0]) document.getElementById('runningTaskTitle').textContent = copy[0];
+    if (copy[1]) document.getElementById('runningTaskDetail').textContent = copy[1];
+  }
+
+  const inferResearchStage = () => {
+    if (currentWorkbenchView !== 'running') return;
+    const output = (document.getElementById('output')?.textContent || '').toLowerCase();
+    let stage = 'plan';
+    if (/报告|report|撰写|write/.test(output)) stage = 'report';
+    else if (/分析|对比|评估|analysis|evaluate/.test(output)) stage = 'analysis';
+    else if (/搜索|检索|抓取|来源|search|scrap|source/.test(output)) stage = 'search';
+    updateResearchStage(stage);
+  }
+
+  const buildReportToc = () => {
+    const report = document.getElementById('reportContainer');
+    const toc = document.getElementById('researchTocLinks');
+    if (!report || !toc) return;
+    const headings = [...report.querySelectorAll('h2, h3')];
+    toc.innerHTML = '';
+    headings.forEach((heading, index) => {
+      if (!heading.id) heading.id = `report-section-${index + 1}`;
+      const link = document.createElement('a');
+      link.href = `#${heading.id}`;
+      link.dataset.level = heading.tagName === 'H3' ? '3' : '2';
+      link.textContent = heading.textContent.trim();
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        heading.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        setResultTocOpen(false);
+      });
+      toc.appendChild(link);
+    });
+    const tocButton = document.getElementById('resultTocButton');
+    if (tocButton) tocButton.disabled = headings.length === 0;
+    if (!headings.length) setResultTocOpen(false);
+  }
+
+  const restoreTaskFromUrl = async () => {
+    const match = window.location.hash.match(/^#task=(.+)$/);
+    if (!match) return;
+    const id = decodeURIComponent(match[1]);
+    if (activeResearchTask?.id === id) {
+      setWorkbenchView(activeResearchTask.status === 'failed' ? 'failed' : 'running', { preserveUrl: true });
+      return;
+    }
+    const index = conversationHistory.findIndex((entry, entryIndex) => getHistoryEntryId(entry, entryIndex) === id);
+    if (index >= 0) {
+      activeHistoryIndex = index;
+      await loadResearchEntry(index);
+    } else {
+      syncTaskUrl(null);
+      setWorkbenchView('welcome', { preserveUrl: true });
+      showToast('未找到对应的历史任务，已返回工作台。');
+    }
+  }
+
+  const initWorkbench = () => {
+    if (workbenchInitialized || !document.querySelector('.research-app-shell')) return;
+    workbenchInitialized = true;
+    const form = document.getElementById('researchForm');
+    const taskGroup = document.getElementById('task')?.closest('.form-group');
+    const competitivePanel = document.querySelector('.competitive-research-panel');
+    taskGroup?.classList.add('workbench-basic-field', 'workbench-step-field');
+    competitivePanel?.classList.add('workbench-step-field');
+    const competitiveChildren = [...(competitivePanel?.children || [])].filter((node) => node.tagName !== 'INPUT');
+    competitiveChildren.forEach((node, index) => {
+      node.classList.add(index === 2 ? 'workbench-options-field' : 'workbench-basic-field');
+    });
+    [...(form?.children || [])].forEach((node) => {
+      if (node.classList?.contains('form-group') && node !== taskGroup && node !== competitivePanel) {
+        node.classList.add('workbench-options-field', 'workbench-step-field');
+      }
+    });
+    form.dataset.workbenchStep = 'basic';
+    document.getElementById('researchFormHost')?.appendChild(form);
+
+    const progressHost = document.getElementById('researchProgressHost');
+    const progress = document.querySelector('.research-output-container');
+    if (progressHost && progress) progressHost.appendChild(progress);
+    const resultHost = document.getElementById('researchResultHost');
+    const conversationHost = document.getElementById('resultConversationHost');
+    const chat = document.getElementById('chatContainer');
+    if (conversationHost && chat) conversationHost.appendChild(chat);
+    const report = document.getElementById('reportContainer');
+    const reportWrapper = report?.closest('.report-container');
+    const analysisSummary = document.getElementById('analysisSummaryContainer');
+    if (analysisSummary) analysisSummary.classList.add('report-reading-context-host');
+    if (reportWrapper && analysisSummary) reportWrapper.prepend(analysisSummary);
+    const images = document.getElementById('selectedImagesContainer')?.closest('.images_div');
+    if (resultHost && images) resultHost.appendChild(images);
+    if (resultHost && reportWrapper) resultHost.appendChild(reportWrapper);
+
+    const exportHost = document.getElementById('resultExportHost');
+    const reportActions = reportWrapper?.querySelector('.report-actions');
+    const jsonButtonContainer = document.getElementById('jsonButtonContainer');
+    if (exportHost && reportActions) exportHost.appendChild(reportActions);
+    if (exportHost && jsonButtonContainer) exportHost.appendChild(jsonButtonContainer);
+
+    const layoutState = getResultLayoutState();
+    setSidebarCollapsed(layoutState.sidebarCollapsed, false);
+    setReportCollapsed(layoutState.reportCollapsed, false);
+    setResultMobilePane(layoutState.mobilePane, false);
+    if (layoutState.conversationWidth) {
+      applyResultConversationWidth(layoutState.conversationWidth, false);
+    }
+
+    document.getElementById('welcomeStartButton')?.addEventListener('click', () => setWorkbenchView('setup-basic'));
+    document.getElementById('newResearchButton')?.addEventListener('click', () => setWorkbenchView('setup-basic'));
+    document.getElementById('sidebarHomeButton')?.addEventListener('click', () => {
+      setWorkbenchView('welcome');
+      document.body.classList.remove('sidebar-open');
+    });
+    document.getElementById('cancelResearchSetup')?.addEventListener('click', () => setWorkbenchView('welcome'));
+    document.getElementById('setupNextButton')?.addEventListener('click', () => {
+      if (validateBasicSetup()) setWorkbenchView('setup-options');
+    });
+    document.getElementById('setupBackButton')?.addEventListener('click', () => setWorkbenchView('setup-basic'));
+    document.getElementById('workbenchSubmitButton')?.addEventListener('click', () => {
+      if (form?.requestSubmit) form.requestSubmit();
+      else document.getElementById('submitButton')?.click();
+    });
+
+    document.querySelectorAll('[data-example-topic]').forEach((button) => {
+      button.addEventListener('click', () => {
+        document.getElementById('researchTopic').value = button.dataset.exampleTopic || '';
+        document.getElementById('task').value = button.dataset.exampleTopic || '';
+        document.getElementById('competitors').value = button.dataset.exampleCompetitors || '';
+        setWorkbenchView('setup-basic');
+      });
+    });
+
+    const setSidebarOpen = (open) => document.body.classList.toggle('sidebar-open', open);
+    document.getElementById('mobileSidebarToggle')?.addEventListener('click', () => setSidebarOpen(true));
+    document.getElementById('mobileSidebarClose')?.addEventListener('click', () => setSidebarOpen(false));
+    document.getElementById('sidebarScrim')?.addEventListener('click', () => setSidebarOpen(false));
+    document.getElementById('sidebarCollapseButton')?.addEventListener('click', () => {
+      setSidebarCollapsed(!document.body.classList.contains('sidebar-collapsed'));
+    });
+    document.getElementById('resultReportCollapseButton')?.addEventListener('click', () => setReportCollapsed(true));
+    document.getElementById('resultReportRailButton')?.addEventListener('click', () => setReportCollapsed(false));
+    const resultColumnResizer = document.getElementById('resultColumnResizer');
+    if (resultColumnResizer) {
+      let resizing = false;
+
+      const resizeFromPointer = (event, persist = false) => {
+        const workbench = document.getElementById('resultWorkbench');
+        if (!workbench) return;
+        applyResultConversationWidth(event.clientX - workbench.getBoundingClientRect().left, persist);
+      };
+
+      resultColumnResizer.addEventListener('pointerdown', (event) => {
+        if (window.matchMedia('(max-width: 760px)').matches) return;
+        resizing = true;
+        document.body.classList.add('is-resizing-result');
+        resultColumnResizer.setPointerCapture?.(event.pointerId);
+        resizeFromPointer(event);
+        event.preventDefault();
+      });
+      window.addEventListener('pointermove', (event) => {
+        if (resizing) resizeFromPointer(event);
+      });
+      const finishResize = (event) => {
+        if (!resizing) return;
+        resizing = false;
+        document.body.classList.remove('is-resizing-result');
+        resizeFromPointer(event, true);
+        resultColumnResizer.releasePointerCapture?.(event.pointerId);
+      };
+      window.addEventListener('pointerup', finishResize);
+      window.addEventListener('pointercancel', finishResize);
+      resultColumnResizer.addEventListener('keydown', (event) => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        const current = Number(resultColumnResizer.getAttribute('aria-valuenow')) || resultConversationWidth || 420;
+        const min = Number(resultColumnResizer.getAttribute('aria-valuemin')) || 320;
+        const max = Number(resultColumnResizer.getAttribute('aria-valuemax')) || 720;
+        const next = event.key === 'Home'
+          ? min
+          : event.key === 'End'
+            ? max
+            : current + (event.key === 'ArrowRight' ? 16 : -16);
+        applyResultConversationWidth(next);
+        event.preventDefault();
+      });
+      window.addEventListener('resize', () => {
+        if (resultConversationWidth) applyResultConversationWidth(resultConversationWidth, false);
+      });
+    }
+    document.querySelectorAll('[data-result-pane]').forEach((button) => {
+      button.addEventListener('click', () => setResultMobilePane(button.dataset.resultPane));
+    });
+    document.getElementById('resultTocButton')?.addEventListener('click', () => {
+      const toc = document.getElementById('researchToc');
+      setResultTocOpen(Boolean(toc?.hidden));
+      setResultExportOpen(false);
+    });
+    document.getElementById('resultTocCloseButton')?.addEventListener('click', () => setResultTocOpen(false));
+    document.getElementById('resultExportButton')?.addEventListener('click', () => {
+      const menu = document.getElementById('resultExportMenu');
+      setResultExportOpen(Boolean(menu?.hidden));
+      setResultTocOpen(false);
+    });
+    document.getElementById('resultCopyButton')?.addEventListener('click', copyToClipboard);
+    document.getElementById('resultSourcesButton')?.addEventListener('click', () => {
+      const sources = document.getElementById('reportReadingContext');
+      const details = document.getElementById('readingContextDetails');
+      if (sources && details) {
+        details.open = true;
+        sources.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        window.setTimeout(() => details.querySelector('summary')?.focus(), 220);
+      }
+      else showToast('这份报告没有返回可展示的来源明细。');
+    });
+    document.getElementById('workbenchHistorySearch')?.addEventListener('input', renderWorkbenchHistory);
+
+    const historyMenu = document.getElementById('sidebarHistoryMenu');
+    document.getElementById('sidebarHistoryMenuButton')?.addEventListener('click', () => {
+      if (historyMenu) historyMenu.hidden = !historyMenu.hidden;
+    });
+    historyMenu?.addEventListener('click', (event) => {
+      const action = event.target.closest('[data-history-action]')?.dataset.historyAction;
+      if (action === 'export') exportHistory();
+      if (action === 'import') triggerImportHistory();
+      if (action === 'clear') clearConversationHistory();
+      historyMenu.hidden = true;
+    });
+
+    const openStatusPanel = () => {
+      document.body.classList.add('workbench-status-open');
+      document.getElementById('websocketPanel')?.classList.add('open');
+    };
+    document.getElementById('workspaceStatusButton')?.addEventListener('click', openStatusPanel);
+    document.getElementById('websocketPanelToggle')?.addEventListener('click', () => {
+      document.body.classList.remove('workbench-status-open');
+    });
+
+    document.getElementById('retryResearchButton')?.addEventListener('click', () => setWorkbenchView('setup-options'));
+    document.getElementById('viewFailureLogButton')?.addEventListener('click', () => {
+      setWorkbenchView('running', { preserveUrl: true });
+      const details = document.getElementById('researchLogDetails');
+      if (details) details.open = true;
+    });
+
+    new MutationObserver(inferResearchStage).observe(document.getElementById('output'), { childList: true, subtree: true, characterData: true });
+    new MutationObserver(buildReportToc).observe(document.getElementById('reportContainer'), { childList: true, subtree: true });
+    window.addEventListener('hashchange', restoreTaskFromUrl);
+    renderWorkbenchHistory();
+    setTimeout(restoreTaskFromUrl, 900);
+  }
+
   const copyToClipboard = () => {
     const textarea = document.createElement('textarea')
     textarea.id = 'temp_element'
@@ -1691,6 +2616,16 @@ const GPTResearcher = (() => {
     var status = ''
     switch (state) {
       case 'in_progress':
+        activeResearchTask = {
+          id: '',
+          prompt: document.getElementById('researchTopic')?.value.trim() || document.getElementById('task')?.value.trim() || '未命名调研',
+          timestamp: new Date().toISOString(),
+          status: 'starting',
+          stage: 'plan'
+        };
+        updateResearchStage('plan');
+        setWorkbenchView('running', { preserveUrl: true });
+        renderWorkbenchHistory();
         status = '研究进行中...'
         setReportActionsStatus('disabled')
         resetDownloadLinks()
@@ -1714,6 +2649,15 @@ const GPTResearcher = (() => {
         }
         break
       case 'finished':
+        const finishedTitle = document.getElementById('researchTopic')?.value.trim() ||
+          document.getElementById('task')?.value.trim() || activeResearchTask?.prompt || '调研报告';
+        document.getElementById('resultTaskTitle').textContent = finishedTitle;
+        document.getElementById('resultConversationTitle').textContent = finishedTitle;
+        document.getElementById('resultTaskMeta').textContent =
+          `完成于 ${new Date().toLocaleString()} · 基于公开信息生成`;
+        if (activeResearchTask) activeResearchTask.status = 'complete';
+        setWorkbenchView('result', { preserveUrl: true, title: finishedTitle });
+        buildReportToc();
         status = '研究已完成'
         isResearchActive = false;
         // Stop the research icon spinning
@@ -1749,9 +2693,18 @@ const GPTResearcher = (() => {
           chatContainer.style.display = 'block';
           // Initialize chat if not already initialized
           initChat();
+          restoreTaskChatHistory();
         }
         break
       case 'error':
+        if (activeResearchTask) activeResearchTask.status = 'failed';
+        try {
+          localStorage.removeItem(ACTIVE_RESEARCH_STORAGE_KEY);
+        } catch (error) {
+          console.warn('Unable to clear failed research recovery state:', error);
+        }
+        setWorkbenchView('failed', { preserveUrl: true });
+        renderWorkbenchHistory();
         status = '研究失败'
         setReportActionsStatus('disabled')
         isResearchActive = false;
@@ -1838,25 +2791,49 @@ const GPTResearcher = (() => {
   }
 
   const displaySelectedImages = (data) => {
-    const imageContainer = document.getElementById('selectedImagesContainer')
-    //imageContainer.innerHTML = '<h3>Selected Images</h3>'
-    const images = JSON.parse(data.output)
-    console.log("Received images:", images);  // Debug log
-    if (images && images.length > 0) {
-      images.forEach(imageUrl => {
-        const imgElement = document.createElement('img')
-        imgElement.src = imageUrl
-        imgElement.alt = '研究图片'
-        imgElement.style.maxWidth = '200px'
-        imgElement.style.margin = '5px'
-        imgElement.style.cursor = 'pointer'
-        imgElement.onclick = () => showImageDialog(imageUrl)
-        imageContainer.appendChild(imgElement)
-      })
-      imageContainer.style.display = 'block'
-    } else {
-      imageContainer.innerHTML += '<p>本次研究未找到相关图片。</p>'
+    const imageContainer = document.getElementById('selectedImagesContainer');
+    let images = [];
+    try {
+      images = JSON.parse(data.output);
+    } catch (error) {
+      console.warn('Unable to parse images payload:', error);
     }
+
+    const validUrls = Array.isArray(images)
+      ? images.filter((url) => typeof url === 'string' && /^https?:\/\//i.test(url)).slice(0, 8)
+      : [];
+
+    imageContainer.innerHTML = '';
+    imageContainer.style.display = 'none';
+    if (!validUrls.length) return;
+
+    const title = document.createElement('div');
+    title.className = 'reference-images-title';
+    title.textContent = '参考图片';
+    imageContainer.appendChild(title);
+
+    let loadedCount = 0;
+    const updateVisibility = () => {
+      imageContainer.style.display = loadedCount > 0 ? 'block' : 'none';
+    };
+
+    validUrls.forEach((imageUrl) => {
+      const imgElement = document.createElement('img');
+      imgElement.src = imageUrl;
+      imgElement.alt = '参考图片';
+      imgElement.loading = 'lazy';
+      imgElement.style.cursor = 'pointer';
+      imgElement.onload = () => {
+        loadedCount += 1;
+        updateVisibility();
+      };
+      imgElement.onerror = () => {
+        imgElement.remove();
+        updateVisibility();
+      };
+      imgElement.onclick = () => showImageDialog(imageUrl);
+      imageContainer.appendChild(imgElement);
+    });
   }
 
   const showImageDialog = (imageUrl) => {
@@ -2217,15 +3194,10 @@ const GPTResearcher = (() => {
   const initChat = () => {
     const chatInput = document.getElementById('chatInput');
     const sendChatBtn = document.getElementById('sendChatBtn');
-    const voiceInputBtn = document.getElementById('voiceInputBtn');
 
     if (!chatInput || !sendChatBtn) return;
-
-    // Clear previous messages
-    const chatMessages = document.getElementById('chatMessages');
-    if (chatMessages) {
-      chatMessages.innerHTML = '';
-    }
+    if (chatInitialized) return;
+    chatInitialized = true;
 
     // Add event listeners for chat input
     chatInput.addEventListener('keydown', (e) => {
@@ -2237,116 +3209,20 @@ const GPTResearcher = (() => {
 
     sendChatBtn.addEventListener('click', sendChatMessage);
 
-    // Initialize speech recognition if supported
-    if (voiceInputBtn) {
-      initSpeechRecognition(voiceInputBtn, chatInput);
-    }
-
     // Auto-resize textarea as content grows
     chatInput.addEventListener('input', () => {
       chatInput.style.height = 'auto';
       chatInput.style.height = (chatInput.scrollHeight) + 'px';
     });
 
-    // Add welcome message
-    addChatMessage('我可以继续回答关于这份研究报告的问题。你想进一步了解什么？', false);
   }
-
-  // Initialize speech recognition
-  const initSpeechRecognition = (button, inputElement) => {
-    // Check if browser supports speech recognition
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-    if (!SpeechRecognition) {
-      console.warn('Speech recognition not supported in this browser');
-      button.style.display = 'none';
-      return;
-    }
-
-    const recognition = new SpeechRecognition();
-
-    // Configure speech recognition
-    recognition.continuous = false;
-    recognition.lang = 'zh-CN';
-    recognition.interimResults = true;
-    recognition.maxAlternatives = 1;
-
-    let isListening = false;
-    let finalTranscript = '';
-
-    // Add event listeners for speech recognition
-    recognition.onstart = () => {
-      isListening = true;
-      finalTranscript = '';
-      button.classList.add('listening');
-      button.innerHTML = '<i class="fas fa-microphone-slash"></i>';
-      button.title = '停止语音输入';
-
-      // Show visual feedback
-      showToast('正在听...', 1000);
-    };
-
-    recognition.onresult = (event) => {
-      let interimTranscript = '';
-
-      // Loop through the results
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript;
-
-        if (event.results[i].isFinal) {
-          finalTranscript += transcript;
-        } else {
-          interimTranscript += transcript;
-        }
-      }
-
-      // Update the input element with the transcription
-      inputElement.value = finalTranscript + interimTranscript;
-
-      // Trigger input event to resize textarea
-      const inputEvent = new Event('input', { bubbles: true });
-      inputElement.dispatchEvent(inputEvent);
-    };
-
-    recognition.onerror = (event) => {
-      console.error('Speech recognition error', event.error);
-      resetRecognition();
-
-      if (event.error === 'not-allowed') {
-        showToast('麦克风权限被拒绝，请在浏览器设置中允许访问麦克风。', 3000);
-      } else {
-        showToast('语音识别错误：' + event.error, 3000);
-      }
-    };
-
-    recognition.onend = () => {
-      resetRecognition();
-    };
-
-    // Reset the recognition state
-    const resetRecognition = () => {
-      isListening = false;
-      button.classList.remove('listening');
-      button.innerHTML = '<i class="fas fa-microphone"></i>';
-      button.title = '语音输入';
-    };
-
-    // Toggle speech recognition on button click
-    button.addEventListener('click', () => {
-      if (isListening) {
-        recognition.stop();
-      } else {
-        recognition.start();
-      }
-    });
-  };
 
   // Create a new function to handle WebSocket reconnection
   const reconnectWebSocket = (message = null) => {
     // Don't attempt too many reconnections
     if (reconnectAttempts >= maxReconnectAttempts) {
       console.error(`Failed to reconnect after ${maxReconnectAttempts} attempts`);
-      addChatMessage(`重连 ${maxReconnectAttempts} 次后仍失败，请刷新页面。`, false);
+      addChatMessage(`重连 ${maxReconnectAttempts} 次后仍失败，请刷新页面。`, false, { persist: false });
       return false;
     }
 
@@ -2357,7 +3233,7 @@ const GPTResearcher = (() => {
     console.log(`Attempting to reconnect (${reconnectAttempts}/${maxReconnectAttempts}) in ${backoff}ms...`);
 
     // Show reconnection status to user
-    addChatMessage(`连接已断开，正在尝试重连（${reconnectAttempts}/${maxReconnectAttempts}）...`, false);
+    addChatMessage(`连接已断开，正在尝试重连（${reconnectAttempts}/${maxReconnectAttempts}）...`, false, { persist: false });
 
     // Try to reconnect after delay
     setTimeout(() => {
@@ -2394,48 +3270,53 @@ const GPTResearcher = (() => {
     return true;
   };
 
-  // Send a chat message
-  const sendChatMessage = () => {
+  // Send a follow-up question against the currently selected report.
+  const sendChatMessage = async () => {
     const chatInput = document.getElementById('chatInput');
-    if (!chatInput || !chatInput.value.trim()) return;
+    const sendChatBtn = document.getElementById('sendChatBtn');
+    const taskId = getActiveResultTaskId();
+    if (!chatInput || !chatInput.value.trim() || resultChatRequestActive) return;
+    if (!taskId) {
+      addChatMessage('当前没有可追问的调研报告。', false, { persist: false });
+      return;
+    }
 
     const message = chatInput.value.trim();
 
-    // Add user message to chat
     addChatMessage(message, true);
-
-    // Clear input
     chatInput.value = '';
     chatInput.style.height = 'auto';
-
-    // Add loading indicator
     const loadingId = addLoadingIndicator();
+    resultChatRequestActive = true;
+    if (sendChatBtn) sendChatBtn.disabled = true;
 
-    // Prepare the message to send
-    const messageToSend = `chat ${JSON.stringify({ message: message })}`;
-
-    // Send message through WebSocket
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(messageToSend);
-    } else {
-      // If socket is closed, try to reconnect
+    try {
+      const storedChats = getStoredTaskChats();
+      const messages = (storedChats[taskId] || []).map(({ role, content }) => ({ role, content }));
+      const report = currentReport || document.getElementById('reportContainer')?.innerText || '';
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ report, messages })
+      });
+      const data = await response.json();
+      if (!response.ok || data.error || !data.response?.content) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+      }
       removeLoadingIndicator(loadingId);
-
-      // Reset reconnect attempts if this is a new chat session
-      if (reconnectAttempts >= maxReconnectAttempts) {
-        reconnectAttempts = 0;
-      }
-
-      // Attempt to reconnect and queue the message to be sent after reconnection
-      if (!reconnectWebSocket(messageToSend)) {
-        // If reconnection fails or max attempts reached
-        addChatMessage('消息发送失败，当前连接不可用。', false);
-      }
+      addChatMessage(data.response.content, false, { timestamp: data.response.timestamp });
+    } catch (error) {
+      console.error('Report follow-up failed:', error);
+      removeLoadingIndicator(loadingId);
+      addChatMessage('追问暂时未能完成，请稍后重试。', false, { persist: false });
+    } finally {
+      resultChatRequestActive = false;
+      if (sendChatBtn) sendChatBtn.disabled = false;
     }
   }
 
   // Add a chat message to the UI
-  const addChatMessage = (message, isUser = false) => {
+  const addChatMessage = (message, isUser = false, options = {}) => {
     const chatMessages = document.getElementById('chatMessages');
     if (!chatMessages) return;
 
@@ -2461,12 +3342,17 @@ const GPTResearcher = (() => {
     // Add timestamp
     const timestampEl = document.createElement('div');
     timestampEl.className = 'chat-timestamp';
-    const now = new Date();
+    const parsedTimestamp = options.timestamp ? new Date(options.timestamp) : new Date();
+    const now = Number.isNaN(parsedTimestamp.getTime()) ? new Date() : parsedTimestamp;
     timestampEl.textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     messageEl.appendChild(timestampEl);
 
     // Add to chat container
     chatMessages.appendChild(messageEl);
+
+    if (options.persist !== false) {
+      persistTaskChatMessage(message, isUser, now.toISOString());
+    }
 
     // Scroll to bottom
     chatMessages.scrollTop = chatMessages.scrollHeight;

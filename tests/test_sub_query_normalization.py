@@ -8,8 +8,10 @@ whole research run. `_normalize_sub_queries` guarantees a flat `list[str]`.
 """
 
 import unittest
+from types import SimpleNamespace
 
 from gpt_researcher.actions.query_processing import _normalize_sub_queries
+from gpt_researcher.skills.researcher import ResearchConductor, _should_append_original_query
 
 
 class TestNormalizeSubQueries(unittest.TestCase):
@@ -61,6 +63,39 @@ class TestNormalizeSubQueries(unittest.TestCase):
             _normalize_sub_queries({"unexpected": 1}, "original query"),
             ["original query"],
         )
+
+    def test_competitive_marker_task_is_not_appended_as_a_search_query(self):
+        self.assertFalse(
+            _should_append_original_query(
+                "[COMPETITIVE_RESEARCH_MODE]\n研究主题：国内 AI 搜索产品"
+            )
+        )
+
+    def test_plain_research_task_keeps_original_query_search(self):
+        self.assertTrue(_should_append_original_query("AI 搜索产品市场规模"))
+
+
+class TestSubQueryTimeout(unittest.IsolatedAsyncioTestCase):
+    async def test_slow_subquery_returns_empty_context_after_timeout(self):
+        conductor = object.__new__(ResearchConductor)
+        conductor.researcher = SimpleNamespace(verbose=False, websocket=None)
+
+        async def slow_subquery(*_args):
+            import asyncio
+
+            await asyncio.sleep(0.05)
+            return "late context"
+
+        conductor._process_sub_query = slow_subquery
+
+        result = await conductor._process_sub_query_with_timeout(
+            "slow query",
+            [],
+            [],
+            timeout_seconds=0.01,
+        )
+
+        self.assertEqual(result, "")
 
 
 if __name__ == "__main__":

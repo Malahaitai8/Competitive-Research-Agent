@@ -5,14 +5,14 @@
     <title>竞研 Agent</title>
     <meta name="description" content="面向产品经理的竞品研究助手">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="icon" type="image/png" href="/static/jingyan-agent-cat-favicon.png?v=2">
-    <link rel="shortcut icon" href="/static/jingyan-agent-cat-favicon.ico?v=2">
+    <link rel="icon" type="image/png" href="/static/jingyan-agent-cat-professional.png?v=3">
+    <link rel="shortcut icon" type="image/png" href="/static/jingyan-agent-cat-professional.png?v=3">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap" rel="stylesheet">
     <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <link rel="stylesheet" href="/site/styles.css?v=rollback-ui-2" />
+    <link rel="stylesheet" href="/site/styles.css?v=workbench-5" />
     <style>
         .avatar {
             width: 80px;
@@ -133,6 +133,219 @@
                 <span class="status-value" id="currentTask">-</span>
             </div>
         </div>
+    </div>
+
+    <div class="research-app-shell">
+        <aside class="research-sidebar" id="researchSidebar" aria-label="调研任务">
+            <div class="sidebar-brand">
+                <img src="/static/jingyan-agent-cat-professional.png" alt="" class="sidebar-brand-mark">
+                <div>
+                    <strong>竞研 Agent</strong>
+                    <span>竞争情报工作台</span>
+                </div>
+                <button type="button" class="sidebar-collapse-button" id="sidebarCollapseButton" aria-label="收起任务栏" aria-expanded="true">
+                    <i class="fas fa-chevron-left"></i>
+                </button>
+                <button type="button" class="sidebar-close" id="mobileSidebarClose" aria-label="关闭任务栏">
+                    <i class="fas fa-xmark"></i>
+                </button>
+            </div>
+            <button type="button" class="new-research-button" id="newResearchButton">
+                <i class="fas fa-plus"></i>
+                新建调研
+            </button>
+            <label class="sidebar-search" for="workbenchHistorySearch">
+                <i class="fas fa-magnifying-glass"></i>
+                <input id="workbenchHistorySearch" type="search" placeholder="搜索调研历史">
+            </label>
+            <div class="sidebar-section-heading">
+                <span>调研历史</span>
+                <button type="button" id="sidebarHistoryMenuButton" aria-label="历史记录操作">
+                    <i class="fas fa-ellipsis"></i>
+                </button>
+            </div>
+            <div class="sidebar-history-menu" id="sidebarHistoryMenu" hidden>
+                <button type="button" data-history-action="export">导出历史</button>
+                <button type="button" data-history-action="import">导入历史</button>
+                <button type="button" data-history-action="clear">清空历史</button>
+            </div>
+            <nav class="workbench-history" id="workbenchHistory" aria-label="历史任务列表"></nav>
+            <div class="sidebar-footer">
+                <button type="button" class="sidebar-home-button" id="sidebarHomeButton" aria-label="返回主页" title="返回主页">
+                    <i class="fas fa-house" aria-hidden="true"></i>
+                    <span>返回主页</span>
+                </button>
+            </div>
+        </aside>
+        <div class="sidebar-scrim" id="sidebarScrim"></div>
+
+        <section class="research-workspace" id="researchWorkspace">
+            <header class="workspace-header">
+                <button type="button" class="mobile-sidebar-toggle" id="mobileSidebarToggle" aria-label="打开任务栏">
+                    <i class="fas fa-bars"></i>
+                </button>
+                <div class="workspace-context">
+                    <span class="workspace-eyebrow" id="workspaceEyebrow">竞品调研</span>
+                    <strong id="workspaceTitle">工作台</strong>
+                </div>
+                <div class="workspace-header-actions">
+                    <button type="button" id="workspaceStatusButton" title="查看连接状态">
+                        <span class="workspace-status-dot"></span>
+                        <span>已就绪</span>
+                    </button>
+                </div>
+            </header>
+
+            <div class="workbench-view is-active" id="welcomeView" data-workbench-view="welcome">
+                <div class="welcome-composition">
+                    <img src="/static/jingyan-agent-cat-professional.png" alt="竞研 Agent 猫研究员" class="welcome-mascot">
+                    <p class="welcome-kicker">COMPETITIVE RESEARCH</p>
+                    <h1>准备研究哪个市场或产品？</h1>
+                    <p class="welcome-copy">定义研究对象与关注维度，Agent 将完成信息检索、交叉验证和结构化分析。</p>
+                    <button type="button" class="primary-workbench-button" id="welcomeStartButton">开始调研</button>
+                    <div class="research-examples" aria-label="调研示例">
+                        <button type="button" data-example-topic="国内 AI 搜索产品" data-example-competitors="Kimi, 秘塔 AI 搜索, 夸克">
+                            国内 AI 搜索产品格局
+                        </button>
+                        <button type="button" data-example-topic="协同办公 SaaS" data-example-competitors="飞书, 钉钉, 企业微信">
+                            协同办公 SaaS 对比
+                        </button>
+                        <button type="button" data-example-topic="AI 编程助手" data-example-competitors="Cursor, GitHub Copilot, Windsurf">
+                            AI 编程助手研究
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="workbench-view" id="setupBasicView" data-workbench-view="setup-basic">
+                <div class="setup-frame">
+                    <div class="setup-heading">
+                        <span>步骤 1 / 2</span>
+                        <h1>定义研究对象</h1>
+                        <p>明确主题、竞品和研究范围。</p>
+                    </div>
+                    <div id="researchFormHost" class="research-form-host"></div>
+                    <div class="setup-actions">
+                        <button type="button" class="quiet-button" id="cancelResearchSetup">取消</button>
+                        <button type="button" class="primary-workbench-button" id="setupNextButton">下一步</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="workbench-view" id="setupOptionsView" data-workbench-view="setup-options">
+                <div class="setup-frame">
+                    <div class="setup-heading">
+                        <span>步骤 2 / 2</span>
+                        <h1>确认研究方案</h1>
+                        <p>选择分析维度和信息范围，再启动调研。</p>
+                    </div>
+                    <div class="research-summary" id="researchSummary"></div>
+                    <div id="researchOptionsHost" class="research-options-host"></div>
+                    <div class="setup-actions">
+                        <button type="button" class="quiet-button" id="setupBackButton">返回修改</button>
+                        <button type="button" class="primary-workbench-button" id="workbenchSubmitButton">开始调研</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="workbench-view" id="runningView" data-workbench-view="running">
+                <div class="running-frame">
+                    <div class="running-heading">
+                        <span class="running-state"><span></span>调研进行中</span>
+                        <h1 id="runningTaskTitle">正在建立研究框架</h1>
+                        <p id="runningTaskDetail">Agent 正在读取任务并制定信息采集计划。</p>
+                    </div>
+                    <ol class="research-stages" id="researchStages">
+                        <li class="is-active" data-research-stage="plan"><span>1</span><div><strong>制定研究计划</strong><small>明确问题与证据要求</small></div></li>
+                        <li data-research-stage="search"><span>2</span><div><strong>搜索与采集</strong><small>获取公开信息与来源</small></div></li>
+                        <li data-research-stage="analysis"><span>3</span><div><strong>对比分析</strong><small>归纳差异并交叉验证</small></div></li>
+                        <li data-research-stage="report"><span>4</span><div><strong>生成报告</strong><small>组织结论、引用与建议</small></div></li>
+                    </ol>
+                    <details class="research-log-details" id="researchLogDetails">
+                        <summary><span>详细过程</span><small>查看实时检索与分析日志</small></summary>
+                        <div id="researchProgressHost"></div>
+                    </details>
+                </div>
+            </div>
+
+            <div class="workbench-view" id="resultView" data-workbench-view="result">
+                <div class="result-mobile-tabs" role="tablist" aria-label="结果视图">
+                    <button type="button" role="tab" data-result-pane="conversation" aria-selected="false">追问</button>
+                    <button type="button" role="tab" data-result-pane="report" aria-selected="true">报告</button>
+                </div>
+                <div class="result-workbench" id="resultWorkbench" data-active-pane="report">
+                    <section class="result-conversation-panel" id="resultConversationPanel" aria-label="报告追问">
+                        <header class="result-conversation-header">
+                            <div>
+                                <span>报告追问</span>
+                                <strong id="resultConversationTitle">调研报告</strong>
+                            </div>
+                            <span class="result-conversation-status"><i></i>可继续提问</span>
+                        </header>
+                        <div class="result-conversation-host" id="resultConversationHost"></div>
+                    </section>
+
+                    <div class="result-column-resizer" id="resultColumnResizer" role="separator"
+                        aria-label="调整追问与报告宽度" aria-orientation="vertical"
+                        aria-valuemin="320" aria-valuemax="720" aria-valuenow="420" tabindex="0"></div>
+
+                    <section class="result-report-panel" id="resultReportPanel" aria-label="调研报告">
+                        <header class="result-report-toolbar">
+                            <div class="result-report-identity">
+                                <span class="result-status"><i class="fas fa-check"></i>调研已完成</span>
+                                <strong id="resultTaskTitle">调研报告</strong>
+                                <small id="resultTaskMeta">基于公开信息生成</small>
+                            </div>
+                            <div class="result-report-actions">
+                                <button type="button" id="resultTocButton" aria-label="打开报告目录" aria-expanded="false">
+                                    <i class="fas fa-list-ul"></i><span>目录</span>
+                                </button>
+                                <button type="button" id="resultSourcesButton" aria-label="查看报告来源">
+                                    <i class="fas fa-link"></i><span>来源</span>
+                                </button>
+                                <button type="button" id="resultCopyButton" aria-label="复制报告">
+                                    <i class="fas fa-copy"></i><span>复制</span>
+                                </button>
+                                <div class="result-export-control">
+                                    <button type="button" id="resultExportButton" aria-label="导出报告" aria-expanded="false">
+                                        <i class="fas fa-arrow-up-from-bracket"></i><span>导出</span>
+                                    </button>
+                                    <div class="result-export-menu" id="resultExportMenu" hidden>
+                                        <div id="resultExportHost"></div>
+                                    </div>
+                                </div>
+                                <button type="button" id="resultReportCollapseButton" aria-label="收起报告栏" aria-expanded="true">
+                                    <i class="fas fa-chevron-right"></i><span>收起</span>
+                                </button>
+                            </div>
+                        </header>
+                        <aside class="report-toc" id="researchToc" aria-label="报告目录" hidden>
+                            <div class="report-toc-heading">
+                                <strong>报告目录</strong>
+                                <button type="button" id="resultTocCloseButton" aria-label="关闭报告目录"><i class="fas fa-xmark"></i></button>
+                            </div>
+                            <nav id="researchTocLinks"></nav>
+                        </aside>
+                        <article class="report-reading-surface" id="researchResultHost"></article>
+                        <button type="button" class="result-report-rail-button" id="resultReportRailButton" aria-label="展开报告栏">
+                            <i class="fas fa-file-lines"></i><span>报告</span>
+                        </button>
+                    </section>
+                </div>
+            </div>
+
+            <div class="workbench-view" id="failedView" data-workbench-view="failed">
+                <div class="failed-frame">
+                    <span class="failed-icon"><i class="fas fa-triangle-exclamation"></i></span>
+                    <h1>本次调研未能完成</h1>
+                    <p id="researchFailureMessage">任务执行过程中出现异常，详细过程已保留。</p>
+                    <div class="failed-actions">
+                        <button type="button" class="quiet-button" id="viewFailureLogButton">查看详细过程</button>
+                        <button type="button" class="primary-workbench-button" id="retryResearchButton">使用原配置重新调研</button>
+                    </div>
+                </div>
+            </div>
+        </section>
     </div>
 
     <section class="landing">
@@ -284,9 +497,6 @@
             <div id="chatMessages" class="chat-messages"></div>
             <div class="chat-input-container">
                 <textarea id="chatInput" class="form-control chat-input" placeholder="输入你想追问的问题..." rows="2"></textarea>
-                <button id="voiceInputBtn" class="btn btn-secondary" title="语音输入">
-                    <i class="fas fa-microphone"></i>
-                </button>
                 <button id="sendChatBtn" class="btn btn-primary">
                     <i class="fas fa-paper-plane"></i> 发送
                 </button>
@@ -352,7 +562,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.6/purify.min.js"
             integrity="sha512-YlctBG9PGZIhh9keoqI3eZkQM9T8QUbiBi7qNYAO/TUEo8jqWX5pLp5+x1cKRQDRzJ/lyGyJ9WUVNIRduxIIFw=="
             crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-    <script src="/site/scripts.js?v=rollback-ui-2"></script>
+    <script src="/site/scripts.js?v=workbench-5"></script>
     <script>
         // Auto-resize textarea as content grows
         const taskTextarea = document.getElementById('task');

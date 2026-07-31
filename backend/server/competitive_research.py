@@ -3,10 +3,11 @@ import os
 import re
 from datetime import datetime
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from gpt_researcher.competitive_sources import (
     build_source_tier_summary,
+    classify_source_url,
     competitor_official_coverage,
     filter_usable_source_urls,
 )
@@ -113,6 +114,189 @@ def extract_urls(text: str) -> list[str]:
             seen.add(clean_url)
             normalized.append(clean_url)
     return filter_usable_source_urls(normalized)
+
+
+TRACKING_QUERY_KEYS = {
+    "fbclid",
+    "gclid",
+    "mc_cid",
+    "mc_eid",
+    "ref",
+    "referrer",
+    "source",
+}
+
+def _normalize_citation_url(url: str) -> str:
+    parsed = urlparse((url or "").strip())
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return ""
+
+    retained_query = []
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        lowered = key.lower()
+        if lowered.startswith("utm_") or lowered in TRACKING_QUERY_KEYS:
+            continue
+        retained_query.append((key, value))
+
+    path = parsed.path or "/"
+    if path != "/":
+        path = path.rstrip("/")
+    normalized = parsed._replace(
+        scheme=parsed.scheme.lower(),
+        netloc=parsed.netloc.lower(),
+        path=path,
+        query=urlencode(retained_query, doseq=True),
+        fragment="",
+    )
+    return urlunparse(normalized)
+
+
+def extract_report_citation_urls(report: str) -> list[str]:
+    image_urls = {
+        _normalize_citation_url(url)
+        for url in re.findall(r"!\[[^\]]*]\((https?://[^)\s]+)", report or "")
+    }
+    citations = []
+    seen = set()
+    for url in extract_urls(report):
+        normalized = _normalize_citation_url(url)
+        if not normalized or normalized in image_urls or normalized in seen:
+            continue
+        if re.search(r"\.(?:png|jpe?g|gif|webp|svg)(?:$|\?)", normalized, flags=re.IGNORECASE):
+            continue
+        seen.add(normalized)
+        citations.append(normalized)
+    return citations
+
+
+def _reading_source_category(url: str) -> str:
+    tier = classify_source_url(url)["tier"]
+    return {
+        "S": "official",
+        "A": "authoritative",
+        "B": "ordinary",
+        "C": "weak_verification",
+    }.get(tier, "ordinary")
+
+
+def _short_claim(value: Any, limit: int = 54) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text if len(text) <= limit else f"{text[:limit].rstrip()}…"
+
+
+def _attention_copy(claim: str) -> str:
+    short = _short_claim(claim)
+    if any(marker in claim for marker in ("价格", "会员", "订阅", "收费")):
+        return f"“{short}”的价格信息建议复核官方定价页。"
+    if any(marker in claim for marker in ("更新", "上线", "发布", "近期")):
+        return f"“{short}”的近期更新信息建议复核官网公告。"
+    return f"“{short}”暂缺充分公开资料支撑，建议结合原始来源阅读。"
+
+
+def build_reading_context(
+    request: dict[str, Any],
+    report: str,
+    semantic_validation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    cited_urls = extract_report_citation_urls(report)
+    classified = [
+        {
+            "url": url,
+            "domain": _domain_from_url(url).removeprefix("www."),
+            "category": _reading_source_category(url),
+        }
+        for url in cited_urls
+    ]
+    official_count = sum(item["category"] == "official" for item in classified)
+    authoritative_count = sum(item["category"] == "authoritative" for item in classified)
+    ordinary_count = sum(item["category"] == "ordinary" for item in classified)
+    weak_verification_count = sum(item["category"] == "weak_verification" for item in classified)
+
+    domain_map: dict[str, dict[str, Any]] = {}
+    for item in classified:
+        domain_entry = domain_map.setdefault(
+            item["domain"],
+            {
+                "domain": item["domain"],
+                "category": item["category"],
+                "count": 0,
+                "urls": [],
+            },
+        )
+        domain_entry["count"] += 1
+        domain_entry["urls"].append(item["url"])
+    source_domains = sorted(domain_map.values(), key=lambda item: -item["count"])
+
+    validation = semantic_validation or {}
+    claim_validation = validation.get("claim_validation") or []
+    supported_claims = [
+        _short_claim(item.get("claim"))
+        for item in claim_validation
+        if item.get("claim")
+        and item.get("status") == "supported"
+        and (item.get("evidence") or int(item.get("matching_evidence_count") or 0) > 0)
+    ][:2]
+
+    attention_items = []
+    for item in claim_validation:
+        if item.get("claim") and item.get("status") in {
+            "weakly_supported",
+            "unsupported",
+            "needs_human_review",
+        }:
+            attention_items.append(_attention_copy(str(item["claim"])))
+
+    official_coverage = competitor_official_coverage(request, cited_urls)
+    for competitor in official_coverage.get("missing_competitors") or []:
+        attention_items.append(f"{competitor} 的官方公开资料较少，产品定位和关键信息建议复核官网。")
+    attention_items = list(dict.fromkeys(attention_items))[:3]
+
+    missing_items = []
+    for gap in validation.get("semantic_gaps") or []:
+        location = gap.get("location") or {}
+        competitor = str(location.get("competitor") or "").strip()
+        dimension = str(location.get("dimension") or location.get("section") or "").strip()
+        if competitor and dimension:
+            missing_items.append(f"{competitor}的{dimension}暂未找到足够可靠的公开资料。")
+        elif dimension:
+            missing_items.append(f"{dimension}暂未找到足够可靠的公开资料。")
+    missing_items = list(dict.fromkeys(missing_items))[:3]
+
+    total_count = len(cited_urls)
+    supported_source_count = official_count + authoritative_count
+    if not total_count:
+        confidence_summary = "正文暂未检测到可核验的外部引用。"
+    elif weak_verification_count:
+        confidence_summary = "本报告同时使用官方、权威或普通公开资料，其中部分信息来自弱验证来源，相关结论建议结合原始页面确认。"
+    elif supported_source_count == total_count:
+        confidence_summary = "本报告引用以官方或权威公开资料为主，产品基础信息支撑较充分，具体结论仍建议结合原始页面阅读。"
+    elif supported_source_count:
+        confidence_summary = "本报告同时使用官方或权威资料与普通公开资料，价格和近期更新等时效性信息建议结合原始页面确认。"
+    else:
+        confidence_summary = "本报告主要依据普通公开资料生成，关键价格、产品能力和近期更新建议优先复核官网、帮助中心或官方公告。"
+
+    selected_range = str(request.get("time_range") or "当前公开信息").strip() or "当前公开信息"
+    if "最近" in selected_range:
+        time_note = f"报告优先使用{selected_range}的公开信息；较早资料如有引用，仅用于理解产品定位和历史背景。"
+    else:
+        time_note = f"报告按“{selected_range}”口径整理公开信息；带有日期的事实请以原始页面为准。"
+
+    return {
+        "cited_source_count": total_count,
+        "official_source_count": official_count,
+        "authoritative_source_count": authoritative_count,
+        "ordinary_source_count": ordinary_count,
+        "weak_verification_source_count": weak_verification_count,
+        "source_domains": source_domains,
+        "supported_claims": supported_claims,
+        "attention_items": attention_items,
+        "time_scope": {
+            "selected_range": selected_range,
+            "note": time_note,
+        },
+        "missing_items": missing_items,
+        "confidence_summary": confidence_summary,
+    }
 
 
 def _extract_sentences(text: str) -> list[str]:
@@ -697,6 +881,7 @@ def analyze_competitive_report(
         or agent_data.get("semantic_validation")
         or build_semantic_validation(report, matrix, agent_data.get("evidence_ledger") or [])
     )
+    reading_context = build_reading_context(request, report, semantic_validation)
 
     return {
         "generated_at": datetime.now().isoformat(),
@@ -714,6 +899,7 @@ def analyze_competitive_report(
         "repaired_source_count": agent_data.get("repaired_source_count", 0),
         "competitor_normalization": normalization,
         "semantic_validation": semantic_validation,
+        "reading_context": reading_context,
         "semantic_remediation": semantic_data.get("semantic_remediation") or agent_data.get("semantic_remediation") or {},
         "semantic_revalidation": semantic_data.get("semantic_revalidation") or agent_data.get("semantic_revalidation") or {},
         "required_sections": REQUIRED_REPORT_SECTIONS,
